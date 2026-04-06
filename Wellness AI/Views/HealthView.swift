@@ -1414,7 +1414,7 @@ extension View {
             }
             Button("Cancel", role: .cancel) { }
             Button("Privacy Policy") {
-                if let url = URL(string: "https://nessa-wellbeing.ai/privacy") {
+                if let url = URL(string: "https://lucasccipolla.github.io/Wellness-AI/") {
                     UIApplication.shared.open(url)
                 }
             }
