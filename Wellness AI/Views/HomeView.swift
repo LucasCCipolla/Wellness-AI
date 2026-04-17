@@ -30,6 +30,9 @@ struct HomeView: View {
                         
                         // 4. Goal Progress — what you're working toward
                         goalProgressSection
+                        
+                        // 5. Medical Disclaimer
+                        MedicalDisclaimerView()
                     }
                 }
                 .padding()

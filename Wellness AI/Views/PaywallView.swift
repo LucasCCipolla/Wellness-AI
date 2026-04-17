@@ -108,17 +108,40 @@ struct PaywallView: View {
                         }
                         .buttonStyle(.bordered)
 
-                        // Legal text
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Subscription automatically renews. Cancel anytime in App Store settings.")
+                        // Legal text & Links
+                        VStack(spacing: 12) {
+                            Text("Subscription automatically renews. Cancel anytime in App Store settings at least 24 hours before the end of the current period.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                            
                             if let monthlyProduct = monthlyProduct, let subscription = monthlyProduct.subscription {
-                                Text("Period: \(format(period: subscription.subscriptionPeriod))")
+                                Text("Billing: \(monthlyProduct.displayPrice) per \(format(period: subscription.subscriptionPeriod).lowercased())")
                                     .font(.caption2)
+                                    .fontWeight(.bold)
                                     .foregroundStyle(.secondary)
                             }
+                            
+                            HStack(spacing: 20) {
+                                Button("Privacy Policy") {
+                                    if let url = URL(string: "https://lucasccipolla.github.io/Wellness-AI/") {
+                                        UIApplication.shared.open(url)
+                                    }
+                                }
+                                
+                                Text("•")
+                                    .foregroundColor(.secondary)
+                                
+                                Button("Terms of Use (EULA)") {
+                                    if let url = URL(string: "https://lucasccipolla.github.io/Wellness-AI/terms") {
+                                        UIApplication.shared.open(url)
+                                    }
+                                }
+                            }
+                            .font(.caption)
+                            .fontWeight(.medium)
                         }
+                        .padding(.top, 10)
                     }
                     .padding(20)
                     .background(

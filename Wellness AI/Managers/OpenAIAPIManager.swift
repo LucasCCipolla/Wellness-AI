@@ -29,7 +29,7 @@ class OpenAIAPIManager: ObservableObject {
         }
     }
     
-    private let apiKey = "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" // Replace with your actual API key
+    private let apiKey = "REPLACE_WITH_YOUR_OPENAI_API_KEY" // Do not commit your real key!
     private let baseURL = "https://api.openai.com/v1/chat/completions"
     private var cancellables = Set<AnyCancellable>()
     

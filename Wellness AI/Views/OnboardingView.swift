@@ -413,44 +413,86 @@ struct OnboardingView: View {
                 )
                 .padding(.horizontal)
                 
-                // AI Disclosure & Consent Section
-                VStack(alignment: .leading, spacing: 16) {
+                // AI Disclosure & Consent Section - Prominent Version
+                VStack(alignment: .leading, spacing: 20) {
                     HStack(spacing: 12) {
-                        Image(systemName: "shield.lefthalf.filled")
-                            .font(.title3)
-                            .foregroundColor(.blue)
+                        Image(systemName: "brain.head.profile")
+                            .font(.title)
+                            .foregroundColor(.purple)
                         
-                        Text("Privacy & AI Disclosure")
-                            .font(.headline)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("AI Analysis Permission")
+                                .font(.headline)
+                            Text("REQUIRED FOR PERSONALIZED INSIGHTS")
+                                .font(.caption2)
+                                .fontWeight(.bold)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.purple.opacity(0.1))
+                                .foregroundColor(.purple)
+                                .cornerRadius(4)
+                        }
                     }
                     
-                    Text("To provide personalized health insights, Nessa sends your medical conditions, allergies, and HealthKit metrics (like heart rate and sleep) to OpenAI for analysis. This data is transmitted securely and is NOT used to train AI models.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label {
+                            Text("**Who:** Data is sent to **OpenAI** for secure analysis.")
+                                .font(.subheadline)
+                        } icon: {
+                            Image(systemName: "server.rack")
+                                .foregroundColor(.blue)
+                        }
+                        
+                        Label {
+                            Text("**What:** Includes your heart rate, sleep, medical conditions, and allergies.")
+                                .font(.subheadline)
+                        } icon: {
+                            Image(systemName: "heart.text.square")
+                                .foregroundColor(.red)
+                        }
+                        
+                        Label {
+                            Text("**Privacy:** Data is encrypted and **NOT** used to train AI models.")
+                                .font(.subheadline)
+                        } icon: {
+                            Image(systemName: "checkmark.shield")
+                                .foregroundColor(.green)
+                        }
+                    }
+                    
+                    Divider()
                     
                     Toggle(isOn: $userGoals.hasAIConsent) {
-                        Text("I consent to sharing my health data for AI analysis")
+                        Text("I consent to sharing my health data with OpenAI for analysis")
                             .font(.subheadline)
-                            .fontWeight(.medium)
+                            .fontWeight(.bold)
                     }
-                    .tint(.blue)
+                    .tint(.purple)
                     
                     if showConsentError && !userGoals.hasAIConsent {
-                        Text("You must provide consent to continue with AI-powered health monitoring.")
-                            .font(.caption)
-                            .foregroundColor(.red)
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                            Text("Consent is required to enable AI health features.")
+                        }
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .fontWeight(.medium)
                     }
                 }
-                .padding()
+                .padding(20)
                 .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.blue.opacity(0.05))
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(Color(.secondarySystemBackground))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 16)
-                                .stroke(showConsentError && !hasAIConsent ? Color.red : Color.blue.opacity(0.2), lineWidth: 1)
+                            RoundedRectangle(cornerRadius: 20)
+                                .stroke(showConsentError && !userGoals.hasAIConsent ? Color.red : Color.purple.opacity(0.2), lineWidth: 2)
                         )
                 )
                 .padding(.horizontal)
+                
+                // Medical Disclaimer
+                MedicalDisclaimerView()
+                    .padding(.horizontal)
                 
                 Spacer()
                     .frame(height: 120)

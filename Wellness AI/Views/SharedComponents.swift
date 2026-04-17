@@ -335,3 +335,49 @@ struct MetricAnalysisOverlay: View {
     }
 }
 
+extension View {
+    func aiConsentAlert(isPresented: Binding<Bool>, userGoals: UserGoals) -> some View {
+        self.alert("AI Data Sharing Consent", isPresented: isPresented) {
+            Button("Agree") {
+                userGoals.hasAIConsent = true
+            }
+            Button("Cancel", role: .cancel) { }
+            Button("Privacy Policy") {
+                if let url = URL(string: "https://lucasccipolla.github.io/Wellness-AI/") {
+                    UIApplication.shared.open(url)
+                }
+            }
+        } message: {
+            Text("To provide personalized health insights, Nessa sends your health metrics (like heart rate, sleep, and medical conditions) to OpenAI for analysis. This data is transmitted securely and is NOT used to train AI models.")
+        }
+    }
+}
+
+struct MedicalDisclaimerView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.shield.fill")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text("Medical Disclaimer")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.secondary)
+            }
+            
+            Text("Nessa is not a medical device. The insights and recommendations provided by this app are for informational purposes only and are not a substitute for professional medical advice, diagnosis, or treatment. Always seek the advice of your physician or other qualified health provider with any questions you may have regarding a medical condition.")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.secondarySystemBackground).opacity(0.5))
+        )
+        .padding(.vertical, 10)
+    }
+}
+

@@ -18,9 +18,11 @@ To provide its core features, Nessa collects:
 
 ### 3. AI Data Processing (OpenAI)
 Nessa uses the OpenAI API to analyze your wellness data and provide recommendations.
-*   **Data Shared:** When requesting an analysis, specific health metrics (e.g., steps, HRV trends) and meal photos are sent to OpenAI.
+*   **Data Shared:** When requesting an analysis, specific health metrics (e.g., steps, heart rate trends, sleep duration) and user-provided medical conditions/allergies are sent to OpenAI.
 *   **No Training:** We use the OpenAI API (Enterprise/API tier). According to OpenAI’s policies, data sent via their API is **not used to train their AI models.**
+*   **Equal Protection:** We ensure that OpenAI provides the same or equal protection of your personal data as outlined in this Privacy Policy.
 *   **Anonymization:** We do not send your name, email, or any personally identifiable information (PII) to OpenAI.
+*   **Explicit Consent:** No data is shared with OpenAI without your explicit, opt-in consent provided within the App.
 
 ### 4. Data Storage and Security
 *   **Local Storage:** Most of your health data history is stored locally on your device using industry-standard encryption.

@@ -38,6 +38,11 @@
       "id" : "21987090",
       "localizations" : [
         {
+          "description" : "Monthly Subscription",
+          "displayName" : "Nessa Monthly",
+          "locale" : "en_US"
+        },
+        {
           "description" : "",
           "displayName" : "Assinatura Mensal Nessa",
           "locale" : "pt_BR"
@@ -60,6 +65,11 @@
 
           ],
           "localizations" : [
+            {
+              "description" : "Unlock all AI features",
+              "displayName" : "Nessa Monthly",
+              "locale" : "en_US"
+            },
             {
               "description" : "Desbloqueie as funções de IA do aplicativo",
               "displayName" : "Assinatura Mensal Nessa",

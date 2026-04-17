@@ -174,7 +174,7 @@ class SubscriptionManager: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .productNotFound:
-                return "The product 'nessa.mensal2' was not found on the App Store. Please verify its configuration in App Store Connect."
+                return "The subscription product was not found. Please verify the App Store configuration."
             case .unverifiedTransaction:
                 return "The transaction could not be verified by Apple."
             }
