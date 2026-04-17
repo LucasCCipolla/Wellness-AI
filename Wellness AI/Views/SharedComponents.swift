@@ -336,21 +336,6 @@ struct MetricAnalysisOverlay: View {
 }
 
 extension View {
-    func aiConsentAlert(isPresented: Binding<Bool>, userGoals: UserGoals) -> some View {
-        self.alert("AI Data Sharing Consent", isPresented: isPresented) {
-            Button("Agree") {
-                userGoals.hasAIConsent = true
-            }
-            Button("Cancel", role: .cancel) { }
-            Button("Privacy Policy") {
-                if let url = URL(string: "https://lucasccipolla.github.io/Wellness-AI/") {
-                    UIApplication.shared.open(url)
-                }
-            }
-        } message: {
-            Text("To provide personalized health insights, Nessa sends your health metrics (like heart rate, sleep, and medical conditions) to OpenAI for analysis. This data is transmitted securely and is NOT used to train AI models.")
-        }
-    }
 }
 
 struct MedicalDisclaimerView: View {

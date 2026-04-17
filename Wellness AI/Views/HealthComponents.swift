@@ -17,7 +17,6 @@ struct VitalSignCard: View {
     let history: [Double]
     
     @State private var showPaywall = false
-    @State private var showConsentAlert = false
     
     private var valueDouble: Double {
         Double(value) ?? 0
@@ -59,10 +58,6 @@ struct VitalSignCard: View {
     
     var body: some View {
         Button(action: {
-            guard userGoals.hasAIConsent else {
-                showConsentAlert = true
-                return
-            }
             if subscriptionManager.isSubscribed {
                 openAIManager.generateMetricAnalysis(
                     metricName: title,
@@ -128,7 +123,6 @@ struct VitalSignCard: View {
             )
         }
         .buttonStyle(PlainButtonStyle())
-        .aiConsentAlert(isPresented: $showConsentAlert, userGoals: userGoals)
         .sheet(isPresented: $showPaywall) {
             NavigationView { PaywallView(onClose: { showPaywall = false }) }
                 .environmentObject(subscriptionManager)
@@ -244,7 +238,6 @@ struct HealthMetricBadge: View {
     let history: [Double]
     
     @State private var showPaywall = false
-    @State private var showConsentAlert = false
     
     private var valueDouble: Double {
         Double(value) ?? 0
@@ -252,10 +245,6 @@ struct HealthMetricBadge: View {
     
     var body: some View {
         Button(action: {
-            guard userGoals.hasAIConsent else {
-                showConsentAlert = true
-                return
-            }
             if subscriptionManager.isSubscribed {
                 openAIManager.generateMetricAnalysis(
                     metricName: label,
@@ -302,7 +291,6 @@ struct HealthMetricBadge: View {
             )
         }
         .buttonStyle(PlainButtonStyle())
-        .aiConsentAlert(isPresented: $showConsentAlert, userGoals: userGoals)
         .sheet(isPresented: $showPaywall) {
             NavigationView { PaywallView(onClose: { showPaywall = false }) }
                 .environmentObject(subscriptionManager)
@@ -325,7 +313,6 @@ struct BodyMeasurementRow: View {
     let history: [Double]
     
     @State private var showPaywall = false
-    @State private var showConsentAlert = false
     
     private var valueDouble: Double {
         Double(value) ?? 0
@@ -333,10 +320,6 @@ struct BodyMeasurementRow: View {
     
     var body: some View {
         Button(action: {
-            guard userGoals.hasAIConsent else {
-                showConsentAlert = true
-                return
-            }
             if subscriptionManager.isSubscribed {
                 openAIManager.generateMetricAnalysis(
                     metricName: title,
@@ -391,7 +374,6 @@ struct BodyMeasurementRow: View {
             )
         }
         .buttonStyle(PlainButtonStyle())
-        .aiConsentAlert(isPresented: $showConsentAlert, userGoals: userGoals)
         .sheet(isPresented: $showPaywall) {
             NavigationView { PaywallView(onClose: { showPaywall = false }) }
                 .environmentObject(subscriptionManager)
@@ -415,7 +397,6 @@ struct EditableBodyMeasurementRow: View {
     let onSave: () -> Void
     
     @State private var showPaywall = false
-    @State private var showConsentAlert = false
     
     private var valueDouble: Double {
         Double(value) ?? 0
@@ -424,10 +405,6 @@ struct EditableBodyMeasurementRow: View {
     var body: some View {
         HStack(spacing: 16) {
             Button(action: {
-                guard userGoals.hasAIConsent else {
-                    showConsentAlert = true
-                    return
-                }
                 if subscriptionManager.isSubscribed {
                     openAIManager.generateMetricAnalysis(
                         metricName: title,
@@ -520,7 +497,6 @@ struct EditableBodyMeasurementRow: View {
                 .fill(Color(.systemBackground))
                 .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
         )
-        .aiConsentAlert(isPresented: $showConsentAlert, userGoals: userGoals)
         .sheet(isPresented: $showPaywall) {
             NavigationView { PaywallView(onClose: { showPaywall = false }) }
                 .environmentObject(subscriptionManager)

@@ -18,7 +18,6 @@ class HealthViewModel: ObservableObject {
     @Published var isAnalyzingConditions = false
     @Published var showAnalysisSuccess = false
     @Published var showPaywall = false
-    @Published var showConsentAlert = false
     
     var isWeekMode: Bool {
         viewMode == .week
@@ -101,11 +100,6 @@ class HealthViewModel: ObservableObject {
     func analyzeConditions() {
         guard let userGoals = userGoals, let openAIManager = openAIManager else { return }
         guard !userGoals.medicalInfo.conditions.isEmpty || !userGoals.medicalInfo.allergies.isEmpty else { return }
-        
-        guard userGoals.hasAIConsent else {
-            showConsentAlert = true
-            return
-        }
         
         isAnalyzingConditions = true
         showAnalysisSuccess = false

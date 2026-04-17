@@ -17,7 +17,6 @@ struct NutritionView: View {
     @State private var showPaywall = false
     @State private var logAnalysisError: String?
     @State private var showCalorieGoalExpanded = false
-    @State private var showConsentAlert = false
     
     private var isWeekMode: Bool {
         viewMode == .week
@@ -84,10 +83,6 @@ struct NutritionView: View {
                     ImagePicker(image: $logPhoto, sourceType: .camera) { image in
                         if let image = image, let data = image.jpegData(compressionQuality: 0.8) {
                             Task {
-                                guard userGoals.hasAIConsent else {
-                                    showConsentAlert = true
-                                    return
-                                }
                                 await analyzeMealOrDrinkPhoto(data)
                             }
                         }
@@ -98,10 +93,6 @@ struct NutritionView: View {
                     Task {
                         if let data = try? await newValue?.loadTransferable(type: Data.self),
                            let image = UIImage(data: data) {
-                            guard userGoals.hasAIConsent else {
-                                showConsentAlert = true
-                                return
-                            }
                             logPhoto = image
                             await analyzeMealOrDrinkPhoto(data)
                         }
@@ -112,7 +103,6 @@ struct NutritionView: View {
                         .environmentObject(subscriptionManager)
                 }
             }
-            .aiConsentAlert(isPresented: $showConsentAlert, userGoals: userGoals)
             
             // AI Analysis Overlay
             if openAIManager.isAnalyzingMetric {
@@ -719,10 +709,6 @@ struct NutritionView: View {
                 Spacer()
                 
                 Button(action: {
-                    guard userGoals.hasAIConsent else {
-                        showConsentAlert = true
-                        return
-                    }
                     if subscriptionManager.isSubscribed {
                         openAIManager.generateNutritionRecommendations(
                             for: healthKitManager.healthMetrics,
@@ -1028,7 +1014,6 @@ struct FeaturedNutritionCard: View {
     let history: [Double]
     
     @State private var showPaywall = false
-    @State private var showConsentAlert = false
     
     private var valueDouble: Double {
         Double(value) ?? 0
@@ -1041,10 +1026,6 @@ struct FeaturedNutritionCard: View {
     
     var body: some View {
         Button(action: {
-            guard userGoals.hasAIConsent else {
-                showConsentAlert = true
-                return
-            }
             if subscriptionManager.isSubscribed {
                 openAIManager.generateMetricAnalysis(
                     metricName: title,
@@ -1107,7 +1088,6 @@ struct FeaturedNutritionCard: View {
             )
         }
         .buttonStyle(PlainButtonStyle())
-        .aiConsentAlert(isPresented: $showConsentAlert, userGoals: userGoals)
         .sheet(isPresented: $showPaywall) {
             NavigationView { PaywallView(onClose: { showPaywall = false }) }
                 .environmentObject(subscriptionManager)
@@ -1129,7 +1109,6 @@ struct CompactNutritionCard: View {
     let history: [Double]
     
     @State private var showPaywall = false
-    @State private var showConsentAlert = false
     
     private var valueDouble: Double {
         Double(value) ?? 0
@@ -1142,10 +1121,6 @@ struct CompactNutritionCard: View {
     
     var body: some View {
         Button(action: {
-            guard userGoals.hasAIConsent else {
-                showConsentAlert = true
-                return
-            }
             if subscriptionManager.isSubscribed {
                 openAIManager.generateMetricAnalysis(
                     metricName: title,
@@ -1215,7 +1190,6 @@ struct CompactNutritionCard: View {
             )
         }
         .buttonStyle(PlainButtonStyle())
-        .aiConsentAlert(isPresented: $showConsentAlert, userGoals: userGoals)
         .sheet(isPresented: $showPaywall) {
             NavigationView { PaywallView(onClose: { showPaywall = false }) }
                 .environmentObject(subscriptionManager)

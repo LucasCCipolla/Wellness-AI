@@ -63,7 +63,6 @@ struct HealthView: View {
             .onChange(of: viewMode) {
                 viewModel.viewMode = viewMode
             }
-            .aiConsentAlert(isPresented: $viewModel.showConsentAlert, userGoals: userGoals)
             
             // AI Analysis Overlay
             analysisOverlay
@@ -87,10 +86,6 @@ extension HealthView {
                 Spacer()
                 
                 Button(action: {
-                    guard userGoals.hasAIConsent else {
-                        viewModel.showConsentAlert = true
-                        return
-                    }
                     if subscriptionManager.isSubscribed {
                         openAIManager.generateHealthRecommendations(
                             for: healthKitManager.healthMetrics,

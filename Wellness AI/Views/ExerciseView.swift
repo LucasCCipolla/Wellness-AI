@@ -13,7 +13,6 @@ struct ExerciseView: View {
     @State private var expandedWorkoutId: Date?
     @State private var showDailyBreakdown = false
     @State private var showPaywall = false
-    @State private var showConsentAlert = false
     
     // Keep TimePeriod for workout history filtering (7 days by default)
     enum TimePeriod: String, CaseIterable {
@@ -87,7 +86,6 @@ struct ExerciseView: View {
                         .environmentObject(subscriptionManager)
                 }
             }
-            .aiConsentAlert(isPresented: $showConsentAlert, userGoals: userGoals)
             
             // AI Analysis Overlay
             if openAIManager.isAnalyzingMetric {
@@ -368,20 +366,17 @@ struct ExerciseView: View {
                     Spacer()
                     
                     Button(action: {
-                        guard userGoals.hasAIConsent else {
-                            showConsentAlert = true
-                            return
-                        }
-                        if !subscriptionManager.isSubscribed {
+                        if subscriptionManager.isSubscribed {
+                            openAIManager.generateExerciseRecommendations(
+                                for: healthKitManager.healthMetrics,
+                                sevenDayMetrics: healthKitManager.sevenDayMetrics,
+                                userGoals: userGoals,
+                                workouts: healthKitManager.workouts
+                            )
+                        } else {
                             showPaywall = true
-                            return
                         }
-                        openAIManager.generateExerciseRecommendations(
-                            for: healthKitManager.healthMetrics,
-                            sevenDayMetrics: healthKitManager.sevenDayMetrics,
-                            userGoals: userGoals,
-                            workouts: healthKitManager.workouts
-                        )
+
                     }) {
                         HStack(spacing: 6) {
                             if openAIManager.isLoadingExercise {
@@ -502,7 +497,6 @@ struct ExerciseView: View {
         let history: [Double]
         
         @State private var showPaywall = false
-        @State private var showConsentAlert = false
         
         private var valueDouble: Double {
             Double(value.replacingOccurrences(of: ",", with: "")) ?? 0
@@ -510,10 +504,6 @@ struct ExerciseView: View {
         
         var body: some View {
             Button(action: {
-                guard userGoals.hasAIConsent else {
-                    showConsentAlert = true
-                    return
-                }
                 if subscriptionManager.isSubscribed {
                     openAIManager.generateMetricAnalysis(
                         metricName: title,
@@ -575,7 +565,6 @@ struct ExerciseView: View {
                 )
             }
             .buttonStyle(PlainButtonStyle())
-            .aiConsentAlert(isPresented: $showConsentAlert, userGoals: userGoals)
             .sheet(isPresented: $showPaywall) {
                 PaywallView(onClose: { showPaywall = false })
                     .environmentObject(subscriptionManager)

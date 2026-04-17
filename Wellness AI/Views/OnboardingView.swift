@@ -121,6 +121,17 @@ struct OnboardingView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
+                // Progress Bar
+                HStack(spacing: 4) {
+                    ForEach(0..<pages.count, id: \.self) { index in
+                        Capsule()
+                            .frame(height: 6)
+                            .foregroundColor(index <= currentPage ? pages[currentPage].color : Color.gray.opacity(0.2))
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 10)
+                
                 if currentPage < 3 {
                     pageContent
                 } else if currentPage == 3 {
@@ -444,15 +455,21 @@ struct OnboardingView: View {
                         }
                         
                         Label {
-                            Text("**What:** Includes your heart rate, sleep, medical conditions, and allergies.")
-                                .font(.subheadline)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("**What:** Nessa sends ALL your health metrics to OpenAI.")
+                                    .font(.subheadline)
+                                    .fontWeight(.bold)
+                                Text("This includes vitals (Heart Rate, Oxygen, Temp), activity (Steps, Energy), sleep, body measurements (Weight, BMI), and your self-reported medical conditions/allergies.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         } icon: {
                             Image(systemName: "heart.text.square")
                                 .foregroundColor(.red)
                         }
                         
                         Label {
-                            Text("**Privacy:** Data is encrypted and **NOT** used to train AI models.")
+                            Text("**Privacy:** Data is encrypted and **NOT** used to train OpenAI's models.")
                                 .font(.subheadline)
                         } icon: {
                             Image(systemName: "checkmark.shield")
@@ -462,12 +479,40 @@ struct OnboardingView: View {
                     
                     Divider()
                     
-                    Toggle(isOn: $userGoals.hasAIConsent) {
-                        Text("I consent to sharing my health data with OpenAI for analysis")
-                            .font(.subheadline)
-                            .fontWeight(.bold)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle(isOn: $userGoals.hasAIConsent) {
+                            Text("I consent to sharing my health data with OpenAI")
+                                .font(.subheadline)
+                                .fontWeight(.bold)
+                        }
+                        .tint(.purple)
+                        
+                        HStack(spacing: 15) {
+                            Button(action: {
+                                if let url = URL(string: "https://lucasccipolla.github.io/Wellness-AI/") {
+                                    UIApplication.shared.open(url)
+                                }
+                            }) {
+                                Text("Privacy Policy")
+                                    .font(.caption)
+                                    .foregroundColor(.blue)
+                            }
+                            
+                            Text("•")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            
+                            Button(action: {
+                                if let url = URL(string: "https://lucasccipolla.github.io/Wellness-AI/terms") {
+                                    UIApplication.shared.open(url)
+                                }
+                            }) {
+                                Text("Terms of Use (EULA)")
+                                    .font(.caption)
+                                    .foregroundColor(.blue)
+                            }
+                        }
                     }
-                    .tint(.purple)
                     
                     if showConsentError && !userGoals.hasAIConsent {
                         HStack {
