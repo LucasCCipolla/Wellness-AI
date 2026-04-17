@@ -33,4 +33,4 @@ Nessa and its developers shall not be liable for any direct, indirect, incidenta
 The license is effective until terminated by you or Nessa. Your rights under this license will terminate automatically without notice if you fail to comply with any of these terms.
 
 ### 7. Contact Information
-If you have any questions regarding these terms, please contact us at **[Your Email Here]**.
+If you have any questions regarding these terms, please contact us at lucascc2000@hotmail.com.
