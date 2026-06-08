@@ -3,12 +3,17 @@ import SwiftUI
 struct UnifiedRecommendationCard: View {
     let recommendation: AIRecommendation
     var onMarkCompleted: (() -> Void)? = nil
+    /// Called with true for 👍, false for 👎
+    var onFeedback: ((Bool) -> Void)? = nil
     let categoryColor: Color
     let categoryIcon: String
+
+    @State private var feedbackScale: CGFloat = 1.0
     
-    init(recommendation: AIRecommendation, onMarkCompleted: (() -> Void)? = nil) {
+    init(recommendation: AIRecommendation, onMarkCompleted: (() -> Void)? = nil, onFeedback: ((Bool) -> Void)? = nil) {
         self.recommendation = recommendation
         self.onMarkCompleted = onMarkCompleted
+        self.onFeedback = onFeedback
         switch recommendation.category {
         case .exercise:
             self.categoryColor = .green
@@ -89,12 +94,13 @@ struct UnifiedRecommendationCard: View {
                 }
             }
             
-            // Footer: completion control (English label)
-            if let onMarkCompleted = onMarkCompleted {
-                Divider().padding(.vertical, 2)
-                HStack {
+            // Footer: completion + feedback
+            Divider().padding(.vertical, 2)
+            HStack(spacing: 12) {
+                // Mark as done
+                if let onMarkCompleted = onMarkCompleted {
                     if recommendation.isCompleted {
-                        Label("Completed", systemImage: "checkmark.circle.fill")
+                        Label("Done", systemImage: "checkmark.circle.fill")
                             .foregroundColor(.green)
                             .font(.subheadline)
                     } else {
@@ -103,7 +109,43 @@ struct UnifiedRecommendationCard: View {
                         }
                         .buttonStyle(SecondaryButtonStyle())
                     }
-                    Spacer()
+                }
+
+                Spacer()
+
+                // Thumbs feedback
+                if let onFeedback = onFeedback {
+                    HStack(spacing: 4) {
+                        Text("Helpful?")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Button {
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.5)) { feedbackScale = 1.4 }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                                withAnimation(.spring(response: 0.2, dampingFraction: 0.7)) { feedbackScale = 1.0 }
+                            }
+                            onFeedback(true)
+                        } label: {
+                            Image(systemName: recommendation.isHelpful == true ? "hand.thumbsup.fill" : "hand.thumbsup")
+                                .font(.subheadline)
+                                .foregroundColor(recommendation.isHelpful == true ? .green : .secondary)
+                                .scaleEffect(recommendation.isHelpful == true ? 1.0 : feedbackScale)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        Button {
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.5)) { feedbackScale = 1.4 }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                                withAnimation(.spring(response: 0.2, dampingFraction: 0.7)) { feedbackScale = 1.0 }
+                            }
+                            onFeedback(false)
+                        } label: {
+                            Image(systemName: recommendation.isHelpful == false ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                                .font(.subheadline)
+                                .foregroundColor(recommendation.isHelpful == false ? .red : .secondary)
+                                .scaleEffect(recommendation.isHelpful == false ? 1.0 : feedbackScale)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
                 }
             }
         }
@@ -160,13 +202,15 @@ struct PriorityBadge: View {
 }
 
 struct PrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.headline)
-            .foregroundColor(.white)
+            .foregroundColor(isEnabled ? .white : Color(uiColor: .placeholderText))
             .padding()
             .frame(maxWidth: .infinity)
-            .background(Color.blue)
+            .background(isEnabled ? Color.blue : Color(uiColor: .systemGray5))
             .cornerRadius(12)
             .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
             .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
@@ -197,12 +241,38 @@ struct StatCard: View {
     let healthyRange: String
     let icon: String
     let color: Color
+    var score: Int? = nil
+    
+    init(title: String, value: String, subtitle: String, healthyRange: String, icon: String, color: Color, score: Int? = nil) {
+        self.title = title
+        self.value = value
+        self.subtitle = subtitle
+        self.healthyRange = healthyRange
+        self.icon = icon
+        self.color = color
+        self.score = score
+    }
     
     var body: some View {
         VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundColor(color)
+            HStack(alignment: .top) {
+                Image(systemName: icon)
+                    .font(.title2)
+                    .foregroundColor(color)
+                
+                if let score = score {
+                    Spacer()
+                    Text("\(score)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(scoreColor(score))
+                        )
+                }
+            }
             
             Text(value)
                 .font(.title)
@@ -217,10 +287,17 @@ struct StatCard: View {
                 .font(.caption2)
                 .foregroundColor(.secondary)
             
-            Text("Healthy: \(healthyRange)")
-                .font(.caption2)
-                .foregroundColor(.green)
-                .fontWeight(.medium)
+            if healthyRange != "N/A" {
+                Text("Healthy: \(healthyRange)")
+                    .font(.caption2)
+                    .foregroundColor(.green)
+                    .fontWeight(.medium)
+            } else {
+                Text("Active Monitoring")
+                    .font(.caption2)
+                    .foregroundColor(.blue)
+                    .fontWeight(.medium)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding()
@@ -230,11 +307,19 @@ struct StatCard: View {
                 .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
         )
     }
+    
+    private func scoreColor(_ score: Int) -> Color {
+        if score >= 80 { return .green }
+        if score >= 50 { return .orange }
+        return .red
+    }
 }
 
 struct MetricAnalysisOverlay: View {
     let analysis: OpenAIAPIManager.MetricAnalysis
     let onClose: () -> Void
+    
+    @EnvironmentObject var userGoals: UserGoals
     
     var body: some View {
         VStack(spacing: 20) {
@@ -261,7 +346,7 @@ struct MetricAnalysisOverlay: View {
                     Image(systemName: "chart.line.uptrend.xyaxis")
                         .foregroundColor(.blue)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("7-Day Trend")
+                        Text("\(userGoals.historicalAverageDays)-Day Trend")
                             .font(.subheadline)
                             .fontWeight(.bold)
                         Text(analysis.trend)
@@ -338,7 +423,98 @@ struct MetricAnalysisOverlay: View {
 extension View {
 }
 
+// MARK: - Skeleton Loading
+
+/// A single shimmer block used inside skeleton views.
+struct SkeletonBlock: View {
+    var width: CGFloat? = nil
+    var height: CGFloat = 16
+    var cornerRadius: CGFloat = 8
+    @State private var shimmerOffset: CGFloat = -1
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius)
+            .fill(
+                LinearGradient(
+                    gradient: Gradient(stops: [
+                        .init(color: Color(.systemFill), location: 0),
+                        .init(color: Color(.tertiarySystemFill), location: 0.4 + shimmerOffset * 0.3),
+                        .init(color: Color(.systemFill), location: 0.8)
+                    ]),
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .frame(width: width, height: height)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false)) {
+                    shimmerOffset = 1
+                }
+            }
+    }
+}
+
+/// Skeleton loading placeholder that mimics the HomeView layout.
+struct HomeSkeletonView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            // Prediction card skeleton
+            VStack(alignment: .leading, spacing: 12) {
+                SkeletonBlock(width: 140, height: 14)
+                SkeletonBlock(height: 24)
+                SkeletonBlock(width: 200, height: 14)
+                SkeletonBlock(height: 48, cornerRadius: 10)
+            }
+            .padding()
+            .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemBackground).opacity(0.5)))
+
+            // AI recommendations skeleton
+            VStack(alignment: .leading, spacing: 12) {
+                SkeletonBlock(width: 160, height: 14)
+                ForEach(0..<2, id: \.self) { _ in
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 10) {
+                            SkeletonBlock(width: 34, height: 34, cornerRadius: 17)
+                            SkeletonBlock(width: 160, height: 16)
+                            Spacer()
+                            SkeletonBlock(width: 52, height: 20, cornerRadius: 6)
+                        }
+                        SkeletonBlock(height: 14)
+                        SkeletonBlock(width: 220, height: 14)
+                    }
+                    .padding()
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground))
+                        .shadow(color: .black.opacity(0.05), radius: 2))
+                }
+            }
+            .padding()
+            .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemBackground).opacity(0.5)))
+
+            // Goal progress skeleton
+            VStack(alignment: .leading, spacing: 12) {
+                SkeletonBlock(width: 120, height: 14)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    ForEach(0..<4, id: \.self) { _ in
+                        VStack(spacing: 8) {
+                            SkeletonBlock(width: 40, height: 40, cornerRadius: 20)
+                            SkeletonBlock(width: 60, height: 20)
+                            SkeletonBlock(width: 80, height: 12)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground))
+                            .shadow(color: .black.opacity(0.05), radius: 2))
+                    }
+                }
+            }
+        }
+        .padding(.horizontal)
+        .redacted(reason: .placeholder)
+    }
+}
+
 struct MedicalDisclaimerView: View {
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
@@ -365,4 +541,54 @@ struct MedicalDisclaimerView: View {
         .padding(.vertical, 10)
     }
 }
+
+func calculateSingleMetricScore(metricName: String, value: String) -> Int? {
+    let cleanValue = value.replacingOccurrences(of: ",", with: "")
+        .components(separatedBy: CharacterSet(charactersIn: "0123456789.").inverted)
+        .joined()
+    guard let numValue = Double(cleanValue), numValue > 0.0 else { return nil }
+    
+    switch metricName {
+    case "Steps":
+        return numValue >= 10000.0 ? 100 : Int((numValue / 10000.0) * 100.0)
+    case "Active Energy":
+        return numValue >= 500.0 ? 100 : Int((numValue / 500.0) * 100.0)
+    case "Workout Duration", "Activity Minutes":
+        return numValue >= 45.0 ? 100 : Int((numValue / 45.0) * 100.0)
+    case "Resting Heart Rate", "Heart Rate":
+        let rhrVal = Int(numValue)
+        if (60...100).contains(rhrVal) {
+            return 100
+        } else {
+            return max(0, 100 - abs(rhrVal - 80) * 2)
+        }
+    case "Heart Rate Variability":
+        return numValue >= 60.0 ? 100 : Int((numValue / 60.0) * 100.0)
+    case "Oxygen Saturation":
+        let oxVal = numValue <= 1.0 ? numValue * 100.0 : numValue
+        return oxVal >= 95.0 ? 100 : Int((oxVal / 95.0) * 100.0)
+    case "Sleep Duration":
+        if (7.0...9.0).contains(numValue) {
+            return 100
+        } else {
+            return max(0, 100 - Int(abs(numValue - 8.0) * 25.0))
+        }
+    case "Stress Level":
+        let stressVal = Int(numValue)
+        if stressVal <= 20 {
+            return 100
+        } else {
+            return max(0, 100 - Int(Double(stressVal - 20) * 1.5))
+        }
+    case "Calorie Intake", "Calories":
+        let targetCal = 2000.0
+        return max(0, 100 - Int(abs(numValue - targetCal) / targetCal * 100.0))
+    case "Water", "Hydration":
+        let targetWater = 2000.0
+        return numValue >= targetWater ? 100 : Int((numValue / targetWater) * 100.0)
+    default:
+        return nil
+    }
+}
+
 

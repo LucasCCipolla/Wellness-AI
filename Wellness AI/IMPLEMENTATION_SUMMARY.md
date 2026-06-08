@@ -10,14 +10,116 @@ Extended the feature to work seamlessly from the Health tab, allowing users to m
 
 ---
 
+### Phase 3: Advanced Health Insights & Export (May 11, 2026) ⭐
+Added advanced monitoring features including trend indicators, medication-metric linkage, PDF reporting, and safety alerts.
+
+---
+
+### Phase 4: Extended Historical Tracking (May 20, 2026) ⭐
+Implemented flexible history views for priority metrics, allowing users to analyze long-term health trends.
+- **Multi-Range Support**: Added 7-day, 30-day, and 90-day time range selector in Metric Detail view.
+- **Generic Fetching**: Refactored `HealthKitManager` to support arbitrary historical durations.
+- **Improved Visualization**: Updated charts to handle larger datasets with better scaling.
+
+---
+
 ## Complete Feature Set
 
 ### 1. **AI Medical Analysis** 🧠
-- Analyzes medical conditions using OpenAI GPT-3.5
-- Identifies 3-5 most critical health metrics per condition
-- Provides medical reasoning for each metric
+- Analyzes medical conditions and **medications** using OpenAI GPT-4o
+- Identifies 2 or 4 most critical health metrics per condition/medication
+- Provides medical reasoning for each metric linked to specific meds
 - Suggests appropriate icons and color coding
 - Specifies healthy ranges for monitoring
+
+### 2. **Trend Indicators & Comparison** 📈
+- Visual arrows (up/down) showing metric changes compared to the previous day
+- Color-coded trends (green for improvement, red for decline) based on metric type
+- Integrated across Health, Exercise, and Sleep daily breakdown views
+- Uses 5-day historical data for accurate trend assessment
+
+### 3. **Medication Tracking Integration** 💊
+- Links priority metrics directly to medications (e.g., "Monitoring Heart Rate for Lisinopril")
+- Shows medication badges on priority metric cards
+- AI considers medication efficacy and side effects during analysis
+
+### 4. **Health Report Export (PDF)** 📄
+- Professional PDF generation containing medical history and priority metrics
+- Includes current vitals summary and AI reasoning
+- Available via Share Sheet in both Home and Health tabs
+- Designed for sharing with healthcare providers
+
+### 5. **Push Notifications & Alerts** 🔔
+- Real-time evaluation of health metrics against personalized healthy ranges
+- Automatic alerts for out-of-range priority metrics
+- Default safety net alerts for critical vitals (e.g., Resting HR > 100 or O2 < 94%)
+- Cooldown logic to prevent notification fatigue
+
+---
+
+## Technical Architecture
+
+### PDF Export (PDFExportManager.swift)
+```swift
+class PDFExportManager {
+    func generateHealthReport(userGoals: UserGoals, healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?) -> URL?
+}
+```
+
+### Trend Logic (HealthComponents.swift)
+```swift
+struct HealthMetricBadge: View {
+    var previousValue: Double?
+    var isHigherBetter: Bool?
+    // Calculates trendColor and trendIcon automatically
+}
+```
+
+---
+
+## Files Modified
+
+| File | Purpose |
+|------|---------|
+| `Managers/PDFExportManager.swift` | New: PDF generation logic |
+| `Managers/HealthKitManager.swift` | Enhanced alert logic with default bounds |
+| `Managers/OpenAIAPIManager.swift` | Updated AI prompt for medication awareness |
+| `Views/HealthComponents.swift` | Added trend indicator UI components |
+| `Views/HealthView.swift` | Added PDF export and daily trend passing |
+| `Views/HomeView.swift` | Added PDF export and medication badge display |
+| `Views/ExerciseView.swift` | Added trend indicators to exercise breakdown |
+| `Views/WellbeingView.swift` | Added trend indicators to sleep breakdown |
+| **Total** | **8 files updated/created** |
+
+---
+
+## Testing Checklist
+
+### Trend Indicators
+- [x] Arrows appear in daily breakdown views
+- [x] Colors correctly indicate improvement (e.g., HRV up = green, RHR up = red)
+- [x] Correct comparison with the previous day's metrics
+
+### PDF Export
+- [x] "Export" button visible in Home and Health tabs
+- [x] PDF generates with correct medical history and metrics
+- [x] Share sheet opens successfully with the document
+
+### Medication Linking
+- [x] AI analysis mentions specific medications in the rationale
+- [x] Medication badges appear on priority metric cards
+- [x] Multiple medications can be linked to a single metric
+
+### Notifications
+- [x] Alerts trigger when metrics exceed personalized ranges
+- [x] Default safety alerts trigger for high HR or low O2
+- [x] Cooldown logic respected (6-hour minimum between alerts)
+
+---
+
+**Implementation Date**: May 11, 2026  
+**Developer**: AI Assistant (Gemini CLI)  
+**Status**: Complete and Production-Ready ✨
 
 ### 2. **Onboarding Integration** 📱
 - New "Medical Information" page (page 4 of 5)

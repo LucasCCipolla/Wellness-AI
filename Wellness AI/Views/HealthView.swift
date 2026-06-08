@@ -9,21 +9,27 @@ struct HealthView: View {
     
     @Binding var viewMode: AppViewMode
     @StateObject private var viewModel = HealthViewModel()
+    @State private var selectedDate = Date()
+    var backButton: AnyView? = nil
     
     var body: some View {
         ZStack {
             NavigationView {
                 ScrollView {
                     LazyVStack(spacing: 20) {
+                        // 0. Horizontal Day Picker (Only in Today mode)
+                        if viewMode == .today {
+                            dayPickerSection
+                        }
+
                         // 1. AI Health Recommendations
-                        aiHealthRecommendationsSection
                         
                         // 2. Vital Signs
                         vitalSignsSection
                         
-                        // 3. Medical Information
-                        medicalHistorySection
-                        
+                        // 3b. Medical Exams (Clinical Tier)
+                        medicalExamsSection
+
                         // 4. Body Measurements
                         bodyMeasurementsSection
                         
@@ -32,13 +38,18 @@ struct HealthView: View {
                     }
                     .padding()
                 }
-                .navigationTitle("Health")
-                .navigationBarTitleDisplayMode(.large)
+                .navigationTitle(backButton == nil ? "Health" : "")
+                .navigationBarTitleDisplayMode(backButton == nil ? .large : .inline)
                 .toolbar {
+                    if let backBtn = backButton {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            backBtn
+                        }
+                    }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Picker("View Mode", selection: $viewMode) {
                             Text("Today").tag(AppViewMode.today)
-                            Text("Week").tag(AppViewMode.week)
+                            Text("\(userGoals.historicalAverageDays) Days").tag(AppViewMode.week)
                         }
                         .pickerStyle(.segmented)
                         .frame(width: 180)
@@ -50,6 +61,11 @@ struct HealthView: View {
                 .sheet(isPresented: $viewModel.showPaywall) {
                     NavigationView { PaywallView(onClose: { viewModel.showPaywall = false }) }
                         .environmentObject(subscriptionManager)
+                }
+                .sheet(isPresented: $viewModel.showAddExamSheet) {
+                    ExamLoggingView()
+                        .environmentObject(userGoals)
+                        .environmentObject(openAIManager)
                 }
             }
             .onAppear {
@@ -75,6 +91,53 @@ struct HealthView: View {
 // MARK: - Subviews
 
 extension HealthView {
+    
+    private var dayPickerSection: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach(0..<7) { dayOffset in
+                    let date = Calendar.current.date(byAdding: .day, value: -dayOffset, to: Date()) ?? Date()
+                    let isSelected = Calendar.current.isDate(date, inSameDayAs: selectedDate)
+                    
+                    Button(action: {
+                        withAnimation {
+                            selectedDate = date
+                        }
+                    }) {
+                        VStack(spacing: 4) {
+                            Text(dayName(for: date))
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                            
+                            Text(dayNumber(for: date))
+                                .font(.headline)
+                                .fontWeight(.bold)
+                        }
+                        .frame(width: 45, height: 60)
+                        .background(isSelected ? Color.blue : Color(.secondarySystemBackground))
+                        .foregroundColor(isSelected ? .white : .primary)
+                        .cornerRadius(12)
+                    }
+                }
+            }
+            .padding(.horizontal)
+        }
+        .padding(.top, 8)
+    }
+    
+    private func dayName(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE"
+        return formatter.string(from: date).uppercased()
+    }
+    
+    private func dayNumber(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d"
+        return formatter.string(from: date)
+    }
+    
+
     
     private var aiHealthRecommendationsSection: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -127,16 +190,9 @@ extension HealthView {
     }
     
     private var lockedRecommendationsPlaceholder: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "lock.fill").font(.system(size: 40)).foregroundColor(.gray)
-            Text("AI recommendations are available with the Monthly plan.")
-                .font(.headline).foregroundColor(.secondary).multilineTextAlignment(.center).padding(.horizontal)
-            Button("Subscribe") { viewModel.showPaywall = true }
-                .font(.headline).padding(.horizontal, 24).padding(.vertical, 10)
-                .background(Color.blue).foregroundColor(.white).cornerRadius(8)
+        PremiumTeaserView(category: .health) {
+            viewModel.showPaywall = true
         }
-        .frame(maxWidth: .infinity, minHeight: 100).padding()
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground)).shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1))
     }
     
     private var emptyRecommendationsPlaceholder: some View {
@@ -166,39 +222,57 @@ extension HealthView {
     
     private var todayVitalSignsGrid: some View {
         Group {
-            if let metrics = healthKitManager.healthMetrics {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    VitalSignCard(
-                        title: "Heart Rate", value: "\(Int(metrics.heartRate ?? 0))", unit: "BPM", icon: "heart.fill", color: .red,
-                        isNormal: isHeartRateNormal(metrics.heartRate), history: viewModel.getHealthHistoryForMetric("Heart Rate")
-                    )
-                    VitalSignCard(
-                        title: "Resting HR", value: "\(Int(metrics.restingHeartRate ?? 0))", unit: "BPM", icon: "heart.circle.fill", color: .red,
-                        isNormal: isRestingHeartRateNormal(metrics.restingHeartRate), history: viewModel.getHealthHistoryForMetric("Resting HR")
-                    )
-                    VitalSignCard(
-                        title: "HRV", value: "\(Int(metrics.heartRateVariability ?? 0))", unit: "ms", icon: "waveform.path.ecg", color: .green,
-                        isNormal: isHRVNormal(metrics.heartRateVariability), history: viewModel.getHealthHistoryForMetric("HRV")
-                    )
-                    VitalSignCard(
-                        title: "Oxygen Saturation", value: "\(Int((metrics.oxygenSaturation ?? 0) * 100))", unit: "%", icon: "lungs.fill", color: .blue,
-                        isNormal: isOxygenSaturationNormal(metrics.oxygenSaturation), history: viewModel.getHealthHistoryForMetric("Oxygen Saturation")
-                    )
-                    VitalSignCard(
-                        title: "Respiratory Rate", value: "\(Int(metrics.respiratoryRate ?? 0))", unit: "breaths/min", icon: "wind", color: .cyan,
-                        isNormal: isRespiratoryRateNormal(metrics.respiratoryRate), history: viewModel.getHealthHistoryForMetric("Respiratory Rate")
-                    )
-                    VitalSignCard(
-                        title: "Audio Exposure", value: "\(Int(metrics.environmentalAudioExposure ?? 0))", unit: "dB", icon: "waveform", color: .purple,
-                        isNormal: isEnvironmentalAudioExposureNormal(metrics.environmentalAudioExposure), history: viewModel.getHealthHistoryForMetric("Audio Exposure")
-                    )
-                    VitalSignCard(
-                        title: "Wrist Temperature", value: String(format: "%.1f", metrics.wristTemperature ?? 0), unit: "°C", icon: "thermometer.medium", color: .orange,
-                        isNormal: isWristTemperatureNormal(metrics.wristTemperature), history: viewModel.getHealthHistoryForMetric("Wrist Temperature")
-                    )
+            let metricsForDate = healthKitManager.sevenDayMetrics?.dailyMetrics.first { 
+                Calendar.current.isDate($0.date, inSameDayAs: selectedDate)
+            }
+            
+            if let metrics = metricsForDate {
+                VStack(alignment: .leading, spacing: 12) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            VitalSignCard(
+                                title: "Heart Rate", value: metrics.heartRate != nil ? "\(Int(metrics.heartRate!))" : "N/A", unit: "BPM", icon: "heart.fill", color: .red,
+                                isNormal: isHeartRateNormal(metrics.heartRate), history: viewModel.getHealthHistoryForMetric("Heart Rate")
+                            )
+                            .frame(width: 160)
+                            
+                            VitalSignCard(
+                                title: "Resting HR", value: metrics.restingHeartRate != nil ? "\(Int(metrics.restingHeartRate!))" : "N/A", unit: "BPM", icon: "heart.circle.fill", color: .red,
+                                isNormal: isRestingHeartRateNormal(metrics.restingHeartRate), history: viewModel.getHealthHistoryForMetric("Resting HR")
+                            )
+                            .frame(width: 160)
+                            
+                            VitalSignCard(
+                                title: "HRV", value: metrics.heartRateVariability != nil ? "\(Int(metrics.heartRateVariability!))" : "N/A", unit: "ms", icon: "waveform.path.ecg", color: .green,
+                                isNormal: isHRVNormal(metrics.heartRateVariability), history: viewModel.getHealthHistoryForMetric("HRV")
+                            )
+                            .frame(width: 160)
+                            
+                            VitalSignCard(
+                                title: "Oxygen Saturation", value: metrics.oxygenSaturation != nil ? "\(Int(metrics.oxygenSaturation! * 100))" : "N/A", unit: "%", icon: "lungs.fill", color: .blue,
+                                isNormal: isOxygenSaturationNormal(metrics.oxygenSaturation), history: viewModel.getHealthHistoryForMetric("Oxygen Saturation")
+                            )
+                            .frame(width: 160)
+                        }
+                        .padding(.horizontal)
+                        .padding(.vertical, 4)
+                    }
+                    
+                    // Secondary Metrics in a smaller grid below
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                        VitalSignCard(
+                            title: "Respiratory Rate", value: metrics.respiratoryRate != nil ? "\(Int(metrics.respiratoryRate!))" : "N/A", unit: "br/min", icon: "wind", color: .cyan,
+                            isNormal: isRespiratoryRateNormal(metrics.respiratoryRate), history: viewModel.getHealthHistoryForMetric("Respiratory Rate")
+                        )
+                        VitalSignCard(
+                            title: "Audio Exposure", value: metrics.environmentalAudioExposure != nil ? "\(Int(metrics.environmentalAudioExposure!))" : "N/A", unit: "dB", icon: "waveform", color: .purple,
+                            isNormal: isEnvironmentalAudioExposureNormal(metrics.environmentalAudioExposure), history: viewModel.getHealthHistoryForMetric("Audio Exposure")
+                        )
+                    }
+                    .padding(.horizontal)
                 }
             } else {
-                noDataPlaceholder(message: "No vital signs data available", icon: "heart.text.square")
+                noDataPlaceholder(message: "No data available for \(selectedDate.formatted(date: .abbreviated, time: .omitted))", icon: "heart.text.square")
             }
         }
     }
@@ -250,15 +324,66 @@ extension HealthView {
         VStack(alignment: .leading, spacing: 12) {
             Button(action: { withAnimation { viewModel.showDailyBreakdown.toggle() }}) {
                 HStack {
-                    Text("Daily Breakdown (Last 7 Days)").font(.headline).foregroundColor(.primary)
+                    Text("Daily Breakdown (Last \(userGoals.historicalAverageDays) Days)").font(.headline).foregroundColor(.primary)
                     Spacer()
                     Image(systemName: viewModel.showDailyBreakdown ? "chevron.up" : "chevron.down").font(.caption).foregroundColor(.secondary)
                 }.padding(.top, 8)
             }.buttonStyle(PlainButtonStyle())
             
             if viewModel.showDailyBreakdown {
-                ForEach(sevenDayData.dailyMetrics, id: \.date) { daily in
-                    DailyVitalSignRow(dailyMetrics: daily)
+                ForEach(Array(sevenDayData.dailyMetrics.prefix(userGoals.historicalAverageDays).enumerated()), id: \.element.date) { index, daily in
+                    let previousDay = (index + 1 < sevenDayData.dailyMetrics.count) ? sevenDayData.dailyMetrics[index + 1] : nil
+                    DailyVitalSignRow(dailyMetrics: daily, previousMetrics: previousDay)
+                }
+            }
+        }
+    }
+    
+    private var medicalExamsSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Medical Exams").font(.title2).fontWeight(.bold)
+                Spacer()
+                Button(action: { viewModel.showAddExamSheet = true }) {
+                    Image(systemName: "plus.circle.fill").foregroundColor(.blue)
+                }
+            }
+            
+            if userGoals.medicalInfo.examLogs.isEmpty {
+                VStack(spacing: 8) {
+                    Text("No exams recorded").font(.caption).foregroundColor(.secondary)
+                    Text("Log blood tests or lab results to track clinical metrics over time").font(.caption2).foregroundColor(.blue).italic()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding().background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground)).shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1))
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        // Show last 5 exams
+                        ForEach(userGoals.medicalInfo.examLogs.sorted(by: { $0.timestamp > $1.timestamp }).prefix(5)) { exam in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(exam.examName).font(.subheadline).fontWeight(.bold).lineLimit(1)
+                                    Spacer()
+                                    Image(systemName: "doc.text.fill").font(.caption).foregroundColor(.blue)
+                                }
+                                
+                                Text("\(String(format: "%.1f", exam.value)) \(exam.unit)")
+                                    .font(.headline).foregroundColor(.primary)
+                                
+                                if let range = exam.referenceRange {
+                                    Text("Ref: \(range)").font(.system(size: 10)).foregroundColor(.secondary)
+                                }
+                                
+                                Text(exam.timestamp, style: .date).font(.system(size: 10)).foregroundColor(.secondary)
+                            }
+                            .padding(12)
+                            .frame(width: 150, height: 100)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground)).shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1))
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 4)
                 }
             }
         }
@@ -297,122 +422,7 @@ extension HealthView {
         }
     }
     
-    private var medicalHistorySection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Medical Information").font(.title2).fontWeight(.bold)
-                Spacer()
-                if !userGoals.medicalInfo.conditions.isEmpty || !userGoals.medicalInfo.allergies.isEmpty {
-                    analyzeButton
-                }
-            }
-            
-            if viewModel.showAnalysisSuccess { successBanner }
-            
-            allergiesSection
-            conditionsSection
-        }
-    }
-    
-    private var analyzeButton: some View {
-        Button(action: { viewModel.analyzeConditions() }) {
-            HStack(spacing: 6) {
-                if viewModel.isAnalyzingConditions { ProgressView().scaleEffect(0.8) }
-                else { Image(systemName: "brain.head.profile").font(.subheadline); Text("Analyze").font(.subheadline).fontWeight(.medium) }
-            }
-            .foregroundColor(.white).padding(.horizontal, 12).padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.purple))
-        }.disabled(viewModel.isAnalyzingConditions)
-    }
-    
-    private var successBanner: some View {
-        HStack {
-            Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
-            Text("Priority metrics updated! Check the Home tab to see your personalized health metrics.")
-                .font(.caption).foregroundColor(.primary)
-            Spacer()
-            Button(action: { viewModel.showAnalysisSuccess = false }) { Image(systemName: "xmark.circle.fill").foregroundColor(.gray) }
-        }
-        .padding().background(RoundedRectangle(cornerRadius: 12).fill(Color.green.opacity(0.1)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.green.opacity(0.3), lineWidth: 1))
-    }
-    
-    private var allergiesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: "allergens").foregroundColor(.red)
-                Text("Allergies").font(.headline).fontWeight(.semibold)
-                Spacer()
-                Button(action: { viewModel.showAddAllergyDialog() }) { Image(systemName: "plus.circle.fill").foregroundColor(.blue) }
-            }
-            
-            if userGoals.medicalInfo.allergies.isEmpty {
-                Text("No allergies recorded").font(.caption).foregroundColor(.secondary).padding(.vertical, 8)
-            } else {
-                ForEach(userGoals.medicalInfo.allergies, id: \.self) { allergy in
-                    HStack {
-                        Text("•  \(allergy)").font(.body)
-                        Spacer()
-                        Button(action: { userGoals.removeAllergy(allergy) }) { Image(systemName: "xmark.circle.fill").foregroundColor(.red).font(.caption) }
-                    }
-                }
-            }
-        }
-        .padding().background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground)).shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1))
-    }
-    
-    private var conditionsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: "cross.case.fill").foregroundColor(.orange)
-                Text("Medical Conditions").font(.headline).fontWeight(.semibold)
-                Spacer()
-                Button(action: { viewModel.showAddConditionDialog() }) { Image(systemName: "plus.circle.fill").foregroundColor(.blue) }
-            }
-            
-            if userGoals.medicalInfo.conditions.isEmpty {
-                conditionsEmptyState
-            } else {
-                conditionsListState
-            }
-        }
-        .padding().background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground)).shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1))
-    }
-    
-    private var conditionsEmptyState: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("No conditions recorded").font(.caption).foregroundColor(.secondary)
-            Text("Add conditions to get AI-powered priority metrics on your Home tab").font(.caption2).foregroundColor(.blue).italic()
-        }.padding(.vertical, 8)
-    }
-    
-    private var conditionsListState: some View {
-        VStack(spacing: 8) {
-            ForEach(userGoals.medicalInfo.conditions, id: \.self) { condition in
-                HStack {
-                    Text("•  \(condition)").font(.body)
-                    Spacer()
-                    Button(action: {
-                        userGoals.removeCondition(condition)
-                        if !userGoals.medicalInfo.conditions.isEmpty { viewModel.analyzeConditions() }
-                        else { userGoals.setPriorityMetrics([]) }
-                    }) { Image(systemName: "xmark.circle.fill").foregroundColor(.red).font(.caption) }
-                }
-            }
-            
-            Divider().padding(.vertical, 4)
-            
-            HStack(spacing: 8) {
-                if userGoals.priorityMetrics.isEmpty {
-                    Image(systemName: "info.circle.fill").font(.caption).foregroundColor(.blue)
-                    Text("Tap 'Analyze' to identify priority metrics for your conditions").font(.caption2).foregroundColor(.secondary)
-                } else {
-                    Image(systemName: "checkmark.circle.fill").font(.caption).foregroundColor(.green)
-                    Text("\(userGoals.priorityMetrics.count) priority metrics active").font(.caption2).foregroundColor(.secondary)
-                }
-            }
-        }
-    }
+
     
     private var analysisOverlay: some View {
         Group {

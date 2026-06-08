@@ -1,4 +1,5 @@
 import SwiftUI
+internal import HealthKit
 
 struct WellbeingView: View {
     @EnvironmentObject var healthKitManager: HealthKitManager
@@ -6,11 +7,18 @@ struct WellbeingView: View {
     @EnvironmentObject var userGoals: UserGoals
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @Binding var viewMode: AppViewMode
-    @State private var showingBreathingExercise = false
+    var categoryPicker: AnyView? = nil
+    var backButton: AnyView? = nil
     @State private var showDailySleepBreakdown = false
     @State private var showReadyToSleepExpanded = false
     @State private var showTodaySleepStages = false
     @State private var showPaywall = false
+
+    private func calculateStressIntensity() -> Double {
+        guard !healthKitManager.stressDataPoints.isEmpty else { return 0.2 }
+        let avgStress = healthKitManager.stressDataPoints.map { $0.stressScore }.reduce(0, +) / Double(healthKitManager.stressDataPoints.count)
+        return avgStress / 100.0
+    }
     
     private var isWeekMode: Bool {
         viewMode == .week
@@ -18,33 +26,52 @@ struct WellbeingView: View {
     
     var body: some View {
         ZStack {
+            // Adaptive Ambient Background (Metal or Static fallback)
+            AdaptiveAmbientBackground(intensity: calculateStressIntensity())
+                .ignoresSafeArea()
+            
             NavigationView {
                 ScrollView {
                     LazyVStack(spacing: 20) {
-                        // 1. AI Wellbeing Recommendations — first for monetization; primary value prop
+                        // 1. AI Wellbeing Recommendations
                         aiWellbeingRecommendationsSection
                         
-                        // 2. Stress Level Today — current stress (feeds sleep readiness)
-                        stressChartSection
+                        // 2. Stress Level
+                        stressSection
                         
-                        // 3. Am I Ready to Sleep? — most actionable "right now" question
-                        amIReadyToSleepSection
+                        // 3. Actionable "Am I Ready to Sleep?" (Today mode only)
+                        if !isWeekMode {
+                            amIReadyToSleepSection
+                        }
                         
-                        // 4. Sleep Analysis — last night's result
+                        // 4. Sleep Analysis
                         sleepAnalysisSection
                         
-                        // 5. Time in Daylight — supporting environmental factor
+                        // 5. Mood Reflection
+                        moodReflectionSection
+                        
+                        // 6. Time in Daylight
                         daylightSection
                     }
                     .padding()
                 }
-                .navigationTitle("Wellbeing")
-                .navigationBarTitleDisplayMode(.large)
+                .navigationTitle((categoryPicker == nil && backButton == nil) ? "Wellbeing" : "")
+                .navigationBarTitleDisplayMode((categoryPicker == nil && backButton == nil) ? .large : .inline)
                 .toolbar {
+                    if let backBtn = backButton {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            backBtn
+                        }
+                    }
+                    if let picker = categoryPicker {
+                        ToolbarItem(placement: .principal) {
+                            picker
+                        }
+                    }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Picker("View Mode", selection: $viewMode) {
                             Text("Today").tag(AppViewMode.today)
-                            Text("Week").tag(AppViewMode.week)
+                            Text("\(userGoals.historicalAverageDays) Days").tag(AppViewMode.week)
                         }
                         .pickerStyle(.segmented)
                         .frame(width: 180)
@@ -366,24 +393,34 @@ struct WellbeingView: View {
         )
     }
     
-    private var stressChartSection: some View {
+    private var stressSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Stress Level Today")
+            Text(isWeekMode ? "Avg Stress/Day" : "Stress Level Today")
                 .font(.title2)
                 .fontWeight(.bold)
             
-            if !healthKitManager.stressDataPoints.isEmpty {
+            let avgStress: Double = {
+                if isWeekMode {
+                    let daily = healthKitManager.sevenDayMetrics?.dailyMetrics ?? []
+                    let scores = daily.compactMap { $0.moodScore.map { (10 - $0) * 10 } } // Approximation if calculated stress is not in daily
+                    return scores.isEmpty ? 0 : scores.reduce(0, +) / Double(scores.count)
+                } else {
+                    guard !healthKitManager.stressDataPoints.isEmpty else {
+                        return healthKitManager.healthMetrics?.calculatedStressLevel ?? 0
+                    }
+                    return healthKitManager.stressDataPoints.map { $0.stressScore }.reduce(0, +) / Double(healthKitManager.stressDataPoints.count)
+                }
+            }()
+            
+            if avgStress > 0 || !healthKitManager.stressDataPoints.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
-                    // Average stress for today
-                    let avgStress = healthKitManager.stressDataPoints.map { $0.stressScore }.reduce(0, +) / Double(healthKitManager.stressDataPoints.count)
-                    
                     HStack(spacing: 16) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Today's Average")
+                            Text(isWeekMode ? "Weekly Average" : "Today's Average")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             
-                            HStack(spacing: 8) {
+                            HStack(alignment: .firstTextBaseline, spacing: 4) {
                                 Text("\(Int(avgStress))")
                                     .font(.title)
                                     .fontWeight(.bold)
@@ -392,87 +429,261 @@ struct WellbeingView: View {
                                 Text("/ 100")
                                     .font(.headline)
                                     .foregroundColor(.secondary)
+                                
+                                if let score = calculateSingleMetricScore(metricName: "Stress Level", value: String(avgStress)) {
+                                    Text("\(score)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(
+                                            Capsule()
+                                                .fill(score >= 80 ? Color.green : (score >= 50 ? Color.orange : Color.red))
+                                        )
+                                        .padding(.bottom, 2)
+                                }
                             }
-                            
-                            Text(stressLevelDescriptionFromScore(avgStress))
-                                .font(.subheadline)
-                                .foregroundColor(stressLevelColorFromScore(avgStress))
-                                .fontWeight(.medium)
                         }
                         
                         Spacer()
-                    }
-                    .padding()
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(stressLevelColorFromScore(avgStress).opacity(0.1))
-                    )
-                    
-                    // Stress chart (simplified bar chart)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Hourly Intervals")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(.secondary)
                         
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                ForEach(healthKitManager.stressDataPoints) { dataPoint in
-                                    VStack(spacing: 4) {
-                                        // Bar
-                                        ZStack(alignment: .bottom) {
-                                            RoundedRectangle(cornerRadius: 4)
-                                                .fill(Color.gray.opacity(0.2))
-                                                .frame(width: 32, height: 100)
-                                            
-                                            RoundedRectangle(cornerRadius: 4)
-                                                .fill(stressLevelColorFromScore(dataPoint.stressScore))
-                                                .frame(width: 32, height: CGFloat(dataPoint.stressScore))
-                                        }
-                                        
-                                        // Time label
-                                        Text(formatTimeHourly(dataPoint.timestamp))
-                                            .font(.system(size: 10))
-                                            .foregroundColor(.secondary)
-                                            .fixedSize()
-                                            .frame(width: 32, height: 20, alignment: .center)
-                                    }
-                                }
-                            }
-                            .padding(.vertical, 8)
-                        }
+                        Text(stressLevelDescriptionFromScore(avgStress))
+                            .font(.subheadline)
+                            .foregroundColor(stressLevelColorFromScore(avgStress))
+                            .fontWeight(.medium)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(stressLevelColorFromScore(avgStress).opacity(0.1))
+                            .cornerRadius(8)
                     }
-                    .padding()
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color(.systemBackground))
-                            .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
-                    )
+                    
+                    if !isWeekMode && !healthKitManager.stressDataPoints.isEmpty {
+                        StressChart(points: healthKitManager.stressDataPoints)
+                            .frame(height: 100)
+                            .padding(.top, 4)
+                    }
                 }
+                .padding()
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color(.secondarySystemBackground).opacity(0.5))
+                )
             } else {
                 VStack(spacing: 12) {
                     Image(systemName: "waveform.path.ecg")
                         .font(.system(size: 40))
                         .foregroundColor(.gray)
-                    Text("No stress data for today")
+                    Text(isWeekMode ? "No stress data for this week" : "No stress data for today")
                         .font(.headline)
                         .foregroundColor(.secondary)
-                    Text("Stress is calculated from HRV, heart rate, and resting heart rate data")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color(.systemBackground))
-                        .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
-                )
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground)))
             }
         }
     }
     
+    private var moodReflectionSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(isWeekMode ? "Weekly Mood Reflection" : "Mood Reflection Today")
+                .font(.title2)
+                .fontWeight(.bold)
+            
+            let filteredSamples = isWeekMode ? healthKitManager.stateOfMindSamples : healthKitManager.stateOfMindSamples.filter { Calendar.current.isDateInToday($0.startDate) }
+            
+            if filteredSamples.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "face.dashed")
+                        .font(.system(size: 30))
+                        .foregroundColor(.gray)
+                    Text(isWeekMode ? "No mood data found for this week." : "No mood data found for today.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
+                .frame(maxWidth: .infinity)
+                .padding()
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground)).shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1))
+            } else {
+                // Week mode: show mood trend sparkline from diary entries
+                if isWeekMode {
+                    moodTrendChart
+                }
+                MoodReflectionWidget(
+                    isWeekMode: isWeekMode,
+                    primaryMood: primaryMoodForSamples(filteredSamples),
+                    primaryAssociation: primaryAssociationForSamples(filteredSamples),
+                    samples: filteredSamples
+                )
+            }
+        }
+    }
+
+    /// A 7-day mood trend sparkline built from diary entries.
+    private var moodTrendChart: some View {
+        let calendar = Calendar.current
+        let days = userGoals.historicalAverageDays
+        // Build daily average mood scores from diary entries
+        let dailyScores: [(date: Date, score: Double)] = (0..<days).compactMap { offset -> (Date, Double)? in
+            guard let date = calendar.date(byAdding: .day, value: -(days - 1 - offset), to: calendar.startOfDay(for: Date())) else { return nil }
+            let entries = userGoals.diaryEntries.filter { calendar.isDate($0.timestamp, inSameDayAs: date) }
+            guard !entries.isEmpty else { return nil }
+            let avg = entries.map(\.moodScore).reduce(0, +) / Double(entries.count)
+            return (date, avg)
+        }
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Mood Trend")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Spacer()
+                Text("From your diary")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            if dailyScores.isEmpty {
+                Text("Log diary entries to see your mood trend.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 20)
+            } else {
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    let h: CGFloat = 70
+                    let minScore: Double = 1
+                    let maxScore: Double = 10
+                    let count = dailyScores.count
+
+                    ZStack {
+                        // Horizontal guide lines at 3 levels
+                        ForEach([3.0, 5.0, 8.0], id: \.self) { level in
+                            let y = h * (1 - (level - minScore) / (maxScore - minScore))
+                            Path { p in
+                                p.move(to: CGPoint(x: 0, y: y))
+                                p.addLine(to: CGPoint(x: w, y: y))
+                            }
+                            .stroke(Color(.systemGray5), lineWidth: 0.8)
+                        }
+
+                        if count > 1 {
+                            // Connecting line
+                            Path { p in
+                                for (i, entry) in dailyScores.enumerated() {
+                                    let x = w * CGFloat(i) / CGFloat(count - 1)
+                                    let y = h * CGFloat(1 - (entry.score - minScore) / (maxScore - minScore))
+                                    if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
+                                    else { p.addLine(to: CGPoint(x: x, y: y)) }
+                                }
+                            }
+                            .stroke(Color.purple.opacity(0.5), style: StrokeStyle(lineWidth: 2, lineJoin: .round))
+                        }
+
+                        // Dots coloured by mood
+                        ForEach(Array(dailyScores.enumerated()), id: \.offset) { i, entry in
+                            let x = count > 1 ? w * CGFloat(i) / CGFloat(count - 1) : w / 2
+                            let y = h * CGFloat(1 - (entry.score - minScore) / (maxScore - minScore))
+                            Circle()
+                                .fill(moodDotColor(score: entry.score))
+                                .frame(width: 10, height: 10)
+                                .position(x: x, y: y)
+                        }
+                    }
+                    .frame(height: h)
+                }
+                .frame(height: 70)
+
+                // Day labels
+                HStack {
+                    let df: DateFormatter = {
+                        let f = DateFormatter(); f.dateFormat = "EEE"; return f
+                    }()
+                    ForEach(Array(dailyScores.enumerated()), id: \.offset) { i, entry in
+                        Text(df.string(from: entry.date))
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.secondarySystemBackground))
+        )
+    }
+
+    private func moodDotColor(score: Double) -> Color {
+        switch score {
+        case 8...10: return .green
+        case 5..<8:  return .yellow
+        default:     return .red
+        }
+    }
+
+
+    
+    struct MoodSummaryStatCard: View {
+        let title: String
+        let value: String
+        let subtitle: String
+        let icon: String
+        let color: Color
+        
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: icon)
+                        .foregroundColor(color)
+                    Text(title)
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.secondary)
+                }
+                
+                Text(value)
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                
+                Text(subtitle)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.systemBackground))
+            .cornerRadius(12)
+            .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
+        }
+    }
+    
+    private func primaryMoodForSamples(_ samples: [HKStateOfMind]) -> String {
+        guard !samples.isEmpty else { return "No Data" }
+        let counts = samples.reduce(into: [String: Int]()) { dict, sample in
+            dict[MoodReflectionHelpers.valenceDescription(sample.valence), default: 0] += 1
+        }
+        return counts.max(by: { $0.value < $1.value })?.key ?? "Neutral"
+    }
+    
+    private func primaryAssociationForSamples(_ samples: [HKStateOfMind]) -> String {
+        guard !samples.isEmpty else { return "None" }
+        var counts: [HKStateOfMind.Association: Int] = [:]
+        for sample in samples {
+            for association in sample.associations {
+                counts[association, default: 0] += 1
+            }
+        }
+        if let max = counts.max(by: { $0.value < $1.value }) {
+            return MoodReflectionHelpers.associationDescription(max.key)
+        }
+        return "General"
+    }
+
     private var daylightSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Time in Daylight")
@@ -623,7 +834,8 @@ struct WellbeingView: View {
                             icon: "bed.double.fill",
                             color: .blue,
                             isOptimal: avgSleep >= 7.0 && avgSleep <= 9.0,
-                            history: getWellbeingHistoryForMetric("Sleep Duration")
+                            history: getWellbeingHistoryForMetric("Sleep Duration"),
+                            score: calculateSingleMetricScore(metricName: "Sleep Duration", value: String(avgSleep))
                         )
 
                         SleepMetricCard(
@@ -633,13 +845,14 @@ struct WellbeingView: View {
                             icon: "moon.fill",
                             color: .purple,
                             isOptimal: avgSleep >= 7.0,
-                            history: getWellbeingHistoryForMetric("Sleep Duration")
+                            history: getWellbeingHistoryForMetric("Sleep Duration"),
+                            score: calculateSingleMetricScore(metricName: "Sleep Duration", value: String(avgSleep))
                         )
 
                     }
                     
                     // Sleep consistency info
-                    if let dailyMetrics = Array(sevenDayData.dailyMetrics.suffix(7)) as [DailyHealthMetrics]?, !dailyMetrics.isEmpty {
+                    if let dailyMetrics = Array(sevenDayData.dailyMetrics.suffix(userGoals.historicalAverageDays)) as [DailyHealthMetrics]?, !dailyMetrics.isEmpty {
                         let sleepHours = dailyMetrics.compactMap { $0.sleepDuration }
                         if sleepHours.count > 1 {
                             let avgSleepCalc = sleepHours.reduce(0, +) / Double(sleepHours.count)
@@ -683,7 +896,7 @@ struct WellbeingView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Button(action: { withAnimation { showDailySleepBreakdown.toggle() }}) {
                             HStack {
-                                Text("Daily Breakdown (Last 7 Days)")
+                                Text("Daily Breakdown (Last \(userGoals.historicalAverageDays) Days)")
                                     .font(.headline)
                                     .foregroundColor(.primary)
                                 Spacer()
@@ -696,8 +909,9 @@ struct WellbeingView: View {
                         .buttonStyle(PlainButtonStyle())
                         
                         if showDailySleepBreakdown {
-                            ForEach(sevenDayData.dailyMetrics, id: \.date) { daily in
-                                DailySleepRow(dailyMetrics: daily)
+                            ForEach(Array(sevenDayData.dailyMetrics.prefix(userGoals.historicalAverageDays).enumerated()), id: \.element.date) { index, daily in
+                                let previousDay = (index + 1 < sevenDayData.dailyMetrics.count) ? sevenDayData.dailyMetrics[index + 1] : nil
+                                DailySleepRow(dailyMetrics: daily, previousMetrics: previousDay)
                             }
                             if !healthKitManager.sleepData.isEmpty {
                                 sleepStagesCard()
@@ -729,7 +943,8 @@ struct WellbeingView: View {
                             icon: "bed.double.fill",
                             color: .blue,
                             isOptimal: todaySleep >= 7.0 && todaySleep <= 9.0,
-                            history: getWellbeingHistoryForMetric("Sleep Duration")
+                            history: getWellbeingHistoryForMetric("Sleep Duration"),
+                            score: calculateSingleMetricScore(metricName: "Sleep Duration", value: String(todaySleep))
                         )
 
                         SleepMetricCard(
@@ -739,7 +954,8 @@ struct WellbeingView: View {
                             icon: "moon.fill",
                             color: .purple,
                             isOptimal: todaySleep >= 7.0,
-                            history: getWellbeingHistoryForMetric("Sleep Duration")
+                            history: getWellbeingHistoryForMetric("Sleep Duration"),
+                            score: calculateSingleMetricScore(metricName: "Sleep Duration", value: String(todaySleep))
                         )
 
                     }
@@ -907,7 +1123,8 @@ struct WellbeingView: View {
                             sevenDayMetrics: healthKitManager.sevenDayMetrics,
                             userGoals: userGoals,
                             sleepData: healthKitManager.sleepData,
-                            stressDataPoints: healthKitManager.stressDataPoints
+                            stressDataPoints: healthKitManager.stressDataPoints,
+                            stateOfMindSamples: healthKitManager.stateOfMindSamples
                         )
                     } else {
                         showPaywall = true
@@ -941,32 +1158,9 @@ struct WellbeingView: View {
             }
             
             if !subscriptionManager.isSubscribed {
-                VStack(spacing: 12) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 40))
-                        .foregroundColor(.gray)
-                    Text("AI recommendations are available with the Monthly plan.")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    Button("Subscribe") {
-                        showPaywall = true
-                    }
-                    .font(.headline)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 10)
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
+                PremiumTeaserView(category: .wellbeing) {
+                    showPaywall = true
                 }
-                .frame(maxWidth: .infinity, minHeight: 100)
-                .padding()
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color(.systemBackground))
-                        .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
-                )
             } else if wellbeingRecommendations.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "brain.head.profile")
@@ -1077,9 +1271,8 @@ struct WellbeingView: View {
         let calendar = Calendar.current
         let now = Date()
         
-        // Filter for last 7 days to align with 7-day (week) format
-        let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: now) ?? now
-        return sleepData.filter { $0.startDate >= sevenDaysAgo }
+        let targetDaysAgo = calendar.date(byAdding: .day, value: -userGoals.historicalAverageDays, to: now) ?? now
+        return sleepData.filter { $0.startDate >= targetDaysAgo }
     }
     
     // HRV-based stress helper functions
@@ -1252,6 +1445,7 @@ struct SleepMetricCard: View {
     let color: Color
     let isOptimal: Bool
     let history: [Double]
+    let score: Int?
     
     @State private var showPaywall = false
     
@@ -1291,9 +1485,21 @@ struct SleepMetricCard: View {
                         .font(.title2)
                         .foregroundColor(isOptimal ? color : .orange)
                     Spacer()
-                    Image(systemName: "sparkles")
-                        .font(.caption2)
-                        .foregroundColor(color.opacity(0.8))
+                    if let score = score {
+                        Text("\(score)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule()
+                                    .fill(score >= 80 ? Color.green : (score >= 50 ? Color.orange : Color.red))
+                            )
+                    } else {
+                        Image(systemName: "sparkles")
+                            .font(.caption2)
+                            .foregroundColor(color.opacity(0.8))
+                    }
                 }
                 
                 VStack(alignment: .leading, spacing: 4) {
@@ -1391,121 +1597,20 @@ struct MentalHealthToolCard: View {
     }
 }
 
-// Breathing Exercise View
-struct BreathingExerciseView: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var isAnimating = false
-    @State private var phase: BreathingPhase = .inhale
-    @State private var cycleCount = 0
-    
-    enum BreathingPhase {
-        case inhale, hold, exhale, pause
-        
-        var duration: Double {
-            switch self {
-            case .inhale: return 4.0
-            case .hold: return 4.0
-            case .exhale: return 6.0
-            case .pause: return 2.0
-            }
-        }
-        
-        var instruction: String {
-            switch self {
-            case .inhale: return "Breathe In"
-            case .hold: return "Hold"
-            case .exhale: return "Breathe Out"
-            case .pause: return "Pause"
-            }
-        }
-    }
-    
-    var body: some View {
-        NavigationView {
-            VStack(spacing: 40) {
-                Spacer()
-                
-                Text("Breathing Exercise")
-                    .font(.title)
-                    .fontWeight(.bold)
-                
-                Text("Follow the circle and breathe naturally")
-                    .font(.body)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                
-                ZStack {
-                    Circle()
-                        .stroke(Color.blue.opacity(0.3), lineWidth: 4)
-                        .frame(width: 200, height: 200)
-                    
-                    Circle()
-                        .fill(Color.blue.opacity(0.1))
-                        .frame(width: isAnimating ? 180 : 100, height: isAnimating ? 180 : 100)
-                        .animation(.easeInOut(duration: phase.duration), value: isAnimating)
-                }
-                
-                Text(phase.instruction)
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.blue)
-                
-                Text("Cycle \(cycleCount + 1) of 5")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                Spacer()
-                
-                Button("Complete Exercise") {
-                    dismiss()
-                }
-                .buttonStyle(PrimaryButtonStyle())
-                .padding(.horizontal, 32)
-            }
-            .padding()
-            .navigationTitle("Breathing")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Close") {
-                        dismiss()
-                    }
-                }
-            }
-            .onAppear {
-                startBreathingCycle()
-            }
-        }
-    }
-    
-    private func startBreathingCycle() {
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
-            if cycleCount >= 5 {
-                timer.invalidate()
-                return
-            }
-            
-            isAnimating.toggle()
-            
-            // Move to next phase
-            switch phase {
-            case .inhale:
-                phase = .hold
-            case .hold:
-                phase = .exhale
-            case .exhale:
-                phase = .pause
-            case .pause:
-                phase = .inhale
-                cycleCount += 1
-            }
-        }
-    }
-}
-
 struct DailySleepRow: View {
     let dailyMetrics: DailyHealthMetrics
-    
+    var previousMetrics: DailyHealthMetrics? = nil
+
+    private var trendColor: Color {
+        guard let prev = previousMetrics?.sleepDuration, let current = dailyMetrics.sleepDuration, current != prev else { return .secondary }
+        return current > prev ? .green : .red
+    }
+
+    private var trendIcon: String {
+        guard let prev = previousMetrics?.sleepDuration, let current = dailyMetrics.sleepDuration, current != prev else { return "minus" }
+        return current > prev ? "arrow.up.right" : "arrow.down.right"
+    }
+
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
@@ -1516,13 +1621,21 @@ struct DailySleepRow: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
-            
+
             Spacer()
-            
+
             VStack(alignment: .trailing, spacing: 2) {
-                Text(String(format: "%.1f", dailyMetrics.sleepDuration ?? 0))
-                    .font(.headline)
-                    .fontWeight(.bold)
+                HStack(spacing: 4) {
+                    Text(String(format: "%.1f", dailyMetrics.sleepDuration ?? 0))
+                        .font(.headline)
+                        .fontWeight(.bold)
+
+                    if previousMetrics != nil {
+                        Image(systemName: trendIcon)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(trendColor)
+                    }
+                }
                 Text("hours")
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -1533,8 +1646,7 @@ struct DailySleepRow: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color(.systemGray6))
         )
-    }
-    
+    }    
     private var formattedDate: String {
         let calendar = Calendar.current
         if calendar.isDateInToday(dailyMetrics.date) {
@@ -1643,6 +1755,238 @@ struct StressComponentCard: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(color.opacity(0.3), lineWidth: 1)
         )
+    }
+}
+
+// MARK: - Mood Reflection Components
+
+struct MoodReflectionWidget: View {
+    let isWeekMode: Bool
+    let primaryMood: String
+    let primaryAssociation: String
+    let samples: [HKStateOfMind]
+    
+    @State private var isExpanded = false
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Summary Header (Collapsed State)
+            HStack(spacing: 16) {
+                ZStack {
+                    Circle()
+                        .fill(Color.blue.opacity(0.15))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "face.smiling")
+                        .foregroundColor(.blue)
+                        .font(.title3)
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(isWeekMode ? "Weekly Mood & Vitals" : "Mood & Vitals Today")
+                        .font(.headline)
+                        .fontWeight(.bold)
+                    
+                    Text("Primary: \(primaryMood) • Trigger: \(primaryAssociation)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+                
+                Button(action: { withAnimation(.spring()) { isExpanded.toggle() } }) {
+                    Image(systemName: isExpanded ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(.gray.opacity(0.5))
+                }
+            }
+            
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 14) {
+                    Divider()
+                    
+                    HStack(spacing: 20) {
+                        MoodMetricStat(label: "Logs", value: "\(samples.count)", icon: "list.bullet.indent")
+                        MoodMetricStat(label: "Valence", value: averageValence, icon: "chart.bar.fill")
+                        MoodMetricStat(label: "Stability", value: moodStability, icon: "waveform.path")
+                    }
+                    .padding(.vertical, 4)
+                    
+                    Divider()
+                    
+                    Text("Recent reflections:")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.secondary)
+                    
+                    VStack(spacing: 12) {
+                        ForEach(samples.prefix(3), id: \.uuid) { sample in
+                            MoodSampleRow(sample: sample)
+                        }
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.systemBackground))
+                .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
+        )
+    }
+    
+    private var averageValence: String {
+        guard !samples.isEmpty else { return "N/A" }
+        let avg = samples.map { $0.valence }.reduce(0, +) / Double(samples.count)
+        return MoodReflectionHelpers.valenceDescription(avg)
+    }
+    
+    private var moodStability: String {
+        guard samples.count > 1 else { return "N/A" }
+        let valences = samples.map { $0.valence }
+        let avg = valences.reduce(0, +) / Double(valences.count)
+        let variance = valences.map { pow($0 - avg, 2) }.reduce(0, +) / Double(valences.count)
+        let stdDev = sqrt(variance)
+        
+        if stdDev < 0.2 { return "High" }
+        if stdDev < 0.5 { return "Stable" }
+        return "Variable"
+    }
+}
+
+struct MoodMetricStat: View {
+    let label: String
+    let value: String
+    let icon: String
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.caption2)
+                    .foregroundColor(.blue)
+                Text(label)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            Text(value)
+                .font(.subheadline)
+                .fontWeight(.bold)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct MoodSampleRow: View {
+    let sample: HKStateOfMind
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(sample.startDate, style: .date)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(MoodReflectionHelpers.valenceDescription(sample.valence))
+                    .font(.system(size: 10))
+                    .fontWeight(.bold)
+                    .foregroundColor(MoodReflectionHelpers.valenceColor(sample.valence))
+            }
+            
+            if !sample.labels.isEmpty {
+                Text(sample.labels.map { MoodReflectionHelpers.labelDescription($0) }.joined(separator: ", "))
+                    .font(.caption)
+                    .fontWeight(.medium)
+            }
+        }
+    }
+}
+
+struct MoodReflectionHelpers {
+    static func valenceDescription(_ valence: Double) -> String {
+        switch valence {
+        case ..<(-0.6): return "Very Unpleasant"
+        case ..<(-0.2): return "Unpleasant"
+        case ..<0.2: return "Neutral"
+        case ..<0.6: return "Pleasant"
+        default: return "Very Pleasant"
+        }
+    }
+    
+    static func valenceColor(_ valence: Double) -> Color {
+        switch valence {
+        case ..<(-0.2): return .orange
+        case ..<0.2: return .gray
+        default: return .green
+        }
+    }
+    
+    static func labelDescription(_ label: HKStateOfMind.Label) -> String {
+        switch label {
+        case .amazed: return "Amazed"
+        case .amused: return "Amused"
+        case .angry: return "Angry"
+        case .annoyed: return "Annoyed"
+        case .anxious: return "Anxious"
+        case .ashamed: return "Ashamed"
+        case .brave: return "Brave"
+        case .calm: return "Calm"
+        case .content: return "Content"
+        case .disappointed: return "Disappointed"
+        case .discouraged: return "Discouraged"
+        case .disgusted: return "Disgusted"
+        case .embarrassed: return "Embarrassed"
+        case .excited: return "Excited"
+        case .frustrated: return "Frustrated"
+        case .grateful: return "Grateful"
+        case .guilty: return "Guilty"
+        case .happy: return "Happy"
+        case .hopeful: return "Hopeful"
+        case .hopeless: return "Hopeless"
+        case .indifferent: return "Indifferent"
+        case .jealous: return "Jealous"
+        case .joyful: return "Joyful"
+        case .lonely: return "Lonely"
+        case .overwhelmed: return "Overwhelmed"
+        case .passionate: return "Passionate"
+        case .peaceful: return "Peaceful"
+        case .proud: return "Proud"
+        case .relieved: return "Relieved"
+        case .sad: return "Sad"
+        case .scared: return "Scared"
+        case .surprised: return "Surprised"
+        case .worried: return "Worried"
+        case .irritated: return "Irritated"
+        case .stressed: return "Stressed"
+        case .confident: return "Confident"
+        case .drained: return "Drained"
+        case .satisfied: return "Satisfied"
+        @unknown default: return "Unknown"
+        }
+    }
+    
+    static func associationDescription(_ association: HKStateOfMind.Association) -> String {
+        switch association {
+        case .community: return "Community"
+        case .currentEvents: return "Current Events"
+        case .education: return "Education"
+        case .family: return "Family"
+        case .fitness: return "Fitness"
+        case .friends: return "Friends"
+        case .health: return "Health"
+        case .hobbies: return "Hobbies"
+        case .money: return "Money"
+        case .tasks: return "Tasks"
+        case .work: return "Work"
+        case .weather: return "Weather"
+        case .dating: return "Dating"
+        case .identity: return "Identity"
+        case .partner: return "Partner"
+        case .selfCare: return "Self-Care"
+        case .spirituality: return "Spirituality"
+        case .travel: return "Travel"
+        @unknown default: return "Life"
+        }
     }
 }
 

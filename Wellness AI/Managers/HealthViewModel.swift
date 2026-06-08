@@ -18,17 +18,88 @@ class HealthViewModel: ObservableObject {
     @Published var isAnalyzingConditions = false
     @Published var showAnalysisSuccess = false
     @Published var showPaywall = false
-    
+    @Published var showAddMedicationSheet = false
+    @Published var showAddExamSheet = false
+    @Published var nessaPrediction: NessaPrediction?
+    @Published var isFetchingPredictiveInsight = false
+
     var isWeekMode: Bool {
         viewMode == .week
     }
     
+    private var cancellables = Set<AnyCancellable>()
+
     func setup(healthKitManager: HealthKitManager, openAIManager: OpenAIAPIManager, userGoals: UserGoals) {
         self.healthKitManager = healthKitManager
         self.openAIManager = openAIManager
         self.userGoals = userGoals
+
+        // Observe changes to sevenDayMetrics to fetch predictive insights once loaded
+        healthKitManager.$sevenDayMetrics
+            .compactMap { $0 }
+            .sink { [weak self] _ in
+                self?.fetchPredictiveInsight()
+            }
+            .store(in: &cancellables)
+
+        // Trigger predictive insight fetch after setup
+        fetchPredictiveInsight()
     }
-    
+
+    func fetchPredictiveInsight() {
+        guard let healthKitManager = healthKitManager, 
+              let openAIManager = openAIManager, 
+              let userGoals = userGoals else { return }
+
+        // Prevent duplicate concurrent requests
+        guard !isFetchingPredictiveInsight else { return }
+
+        // Check for contextual notifications whenever we have fresh 7-day data
+        if let sevenDayMetrics = healthKitManager.sevenDayMetrics {
+            checkForContextualNotifications(sevenDayMetrics: sevenDayMetrics)
+        }
+
+        // Check if we already have a prediction for today
+        if let lastDate = userGoals.lastPredictiveInsightDate {
+            if Calendar.current.isDateInToday(lastDate), let existingPrediction = userGoals.loadNessaPrediction() {
+                self.nessaPrediction = existingPrediction
+                return
+            }
+        }
+
+        // Only fetch if we have 7-day data
+        guard let sevenDayMetrics = healthKitManager.sevenDayMetrics else {
+            return 
+        }
+
+        isFetchingPredictiveInsight = true
+        openAIManager.generatePredictiveInsights(
+            healthMetrics: healthKitManager.healthMetrics,
+            sevenDayMetrics: sevenDayMetrics,
+            userGoals: userGoals,
+            workouts: healthKitManager.workouts,
+            sleepData: healthKitManager.sleepData,
+            stressDataPoints: healthKitManager.stressDataPoints
+        ) { [weak self] prediction in
+            DispatchQueue.main.async {
+                if let prediction = prediction {
+                    self?.nessaPrediction = prediction
+                    if prediction.isFallback != true {
+                        self?.userGoals?.saveNessaPrediction(prediction)
+                    }
+                }
+                self?.isFetchingPredictiveInsight = false
+            }
+        }
+    }
+
+    // DEBUG: Clears cached prediction and forces a fresh AI fetch
+    func clearAndRefreshPrediction() {
+        userGoals?.nessaPredictionJSON = nil
+        userGoals?.lastPredictiveInsightDate = nil
+        nessaPrediction = nil
+        fetchPredictiveInsight()
+    }
     // MARK: - Metric History
     
     func getHealthHistoryForMetric(_ metric: String) -> [Double] {
@@ -99,21 +170,27 @@ class HealthViewModel: ObservableObject {
     
     func analyzeConditions() {
         guard let userGoals = userGoals, let openAIManager = openAIManager else { return }
-        guard !userGoals.medicalInfo.conditions.isEmpty || !userGoals.medicalInfo.allergies.isEmpty else { return }
+        // Prevent duplicate concurrent analyses
+        guard !isAnalyzingConditions else { return }
+        guard !userGoals.medicalInfo.conditions.isEmpty || !userGoals.medicalInfo.medications.isEmpty || !userGoals.medicalInfo.allergies.isEmpty else { return }
         
         isAnalyzingConditions = true
         showAnalysisSuccess = false
         
         openAIManager.analyzeMedicalConditions(
             userGoals.medicalInfo.conditions,
-            allergies: userGoals.medicalInfo.allergies
+            medications: userGoals.medicalInfo.medications,
+            allergies: userGoals.medicalInfo.allergies,
+            healthHistory: healthKitManager?.sevenDayMetrics,
+            weeklyMeals: userGoals.weeklyMeals
         ) { [weak self] result in
             DispatchQueue.main.async {
                 self?.isAnalyzingConditions = false
                 
                 switch result {
-                case .success(let metrics):
-                    self?.userGoals?.setPriorityMetrics(metrics)
+                case .success(let analysis):
+                    self?.userGoals?.setPriorityMetrics(analysis.priorityMetrics)
+                    self?.userGoals?.setRecommendedTabs(analysis.recommendedTabs)
                     withAnimation {
                         self?.showAnalysisSuccess = true
                     }
@@ -126,6 +203,77 @@ class HealthViewModel: ObservableObject {
                 case .failure(let error):
                     print("Error analyzing conditions: \(error.localizedDescription)")
                     self?.showErrorAlert(title: "Analysis Failed", message: "Could not analyze your conditions. Please try again later.")
+                }
+            }
+        }
+    }
+    
+    private func checkForContextualNotifications(sevenDayMetrics: SevenDayHealthMetrics) {
+        guard let userGoals = userGoals, let openAIManager = openAIManager else { return }
+        
+        // 1. Trend Reinforcement: HRV
+        if sevenDayMetrics.avgHeartRateVariability != nil {
+            // Compare with the first half of the week vs second half (simplified trend)
+            let metrics = sevenDayMetrics.dailyMetrics
+            if metrics.count >= 6 {
+                let firstHalf = metrics.suffix(3).compactMap { $0.heartRateVariability }
+                let secondHalf = metrics.prefix(3).compactMap { $0.heartRateVariability }
+                
+                if !firstHalf.isEmpty && !secondHalf.isEmpty {
+                    let avg1 = firstHalf.reduce(0, +) / Double(firstHalf.count)
+                    let avg2 = secondHalf.reduce(0, +) / Double(secondHalf.count)
+                    
+                    if avg2 > avg1 * 1.1 { // 10% improvement
+                        // Pre-check rate limit before calling OpenAI to save costs
+                        if NotificationManager.shared.shouldSendNotification(type: .trendReinforcement, metricName: "HRV") {
+                            openAIManager.generateContextualNotificationMessage(
+                                type: "Trend",
+                                metricName: "HRV",
+                                details: "Your HRV has improved by \(Int((avg2/avg1 - 1) * 100))% over the last few days.",
+                                userGoal: userGoals.selectedGoals.first?.rawValue ?? "Better Health"
+                            ) { message in
+                                if let msg = message {
+                                    NotificationManager.shared.sendContextualNotification(
+                                        type: .trendReinforcement,
+                                        title: "Great Progress! 📈",
+                                        body: msg,
+                                        metricName: "HRV"
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 2. Data Gap Nudge: Blood Pressure (if Hypertension is a condition)
+        if userGoals.medicalInfo.conditions.contains(where: { $0.lowercased().contains("hypertension") }) {
+            let lastBPLimit = Calendar.current.date(byAdding: .day, value: -2, to: Date())!
+            
+            // Check clinical tier for BP logs
+            let hasRecentBP = userGoals.medicalInfo.examLogs.contains { log in
+                log.examName.lowercased().contains("blood pressure") && log.timestamp > lastBPLimit
+            }
+            
+            if !hasRecentBP {
+                // Pre-check rate limit before calling OpenAI to save costs
+                if NotificationManager.shared.shouldSendNotification(type: .dataGapNudge, metricName: "BloodPressure") {
+                    openAIManager.generateContextualNotificationMessage(
+                        type: "Gap",
+                        metricName: "Blood Pressure",
+                        details: "No readings logged in the last 48 hours.",
+                        userGoal: "Monitor Hypertension"
+                    ) { message in
+                        if let msg = message {
+                            NotificationManager.shared.sendContextualNotification(
+                                type: .dataGapNudge,
+                                title: "Action Required 🩺",
+                                body: msg,
+                                metricName: "BloodPressure"
+                            )
+                        }
+                    }
                 }
             }
         }

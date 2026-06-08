@@ -2,9 +2,21 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSHealthShareUsageDescription</key>
+	<string>This app needs access to your health data to provide personalized wellness recommendations.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>This app needs to update your health data to track your wellness progress.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>This app needs camera access to take photos of your meals for nutritional analysis.</string>
+	<string>This app needs camera access to analyze your meals for nutritional information.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>This app needs photo library access to select meal photos for nutritional analysis.</string>
+	<string>This app needs photo library access to analyze your meals for nutritional information.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>This app uses motion data to provide an immersive and interactive background experience.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>This app needs microphone access to dictate your medical conditions and medications.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>This app needs speech recognition access to transcribe your spoken voice into text.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Nessa requires location access to fetch real-time local weather, air quality, and pollen levels for tracking environmental health risk factors.</string>
 </dict>
 </plist>

@@ -7,11 +7,37 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		399F000B2E9DA3590039C9AC /* Wellness AI Widget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 399F00012E9DA3590039C9AC /* Wellness AI Widget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		39C302962F7DB9B0002BD12D /* StoreKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 39C302952F7DB9B0002BD12D /* StoreKit.framework */; };
 		39CCA4FB2F74888A00D49B94 /* nessa.storekit in Resources */ = {isa = PBXBuildFile; fileRef = 39CCA4FA2F74888A00D49B94 /* nessa.storekit */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		399F000D2E9DA3590039C9AC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 39C264622E9DA3590039C9AC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 399F00032E9DA3590039C9AC;
+			remoteInfo = "Wellness AI Widget";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		399F000A2E9DA3590039C9AC /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				399F000B2E9DA3590039C9AC /* Wellness AI Widget.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		399F00012E9DA3590039C9AC /* Wellness AI Widget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Wellness AI Widget.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		39C2646A2E9DA3590039C9AC /* Wellness AI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Wellness AI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		39C302952F7DB9B0002BD12D /* StoreKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = StoreKit.framework; path = System/Library/Frameworks/StoreKit.framework; sourceTree = SDKROOT; };
 		39CCA4FA2F74888A00D49B94 /* nessa.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = nessa.storekit; sourceTree = "<group>"; };
@@ -25,9 +51,24 @@
 			);
 			target = 39C264692E9DA3590039C9AC /* Wellness AI */;
 		};
+		399F000E2E9DA3590039C9AC /* Exceptions for "Wellness AI Widget" folder in "Wellness AI Widget" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 399F00032E9DA3590039C9AC /* Wellness AI Widget */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		399F00022E9DA3590039C9AC /* Wellness AI Widget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				399F000E2E9DA3590039C9AC /* Exceptions for "Wellness AI Widget" folder in "Wellness AI Widget" target */,
+			);
+			path = "Wellness AI Widget";
+			sourceTree = "<group>";
+		};
 		39C2646C2E9DA3590039C9AC /* Wellness AI */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -39,6 +80,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		399F00062E9DA3590039C9AC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		39C264672E9DA3590039C9AC /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -55,6 +103,7 @@
 			children = (
 				39CCA4FA2F74888A00D49B94 /* nessa.storekit */,
 				39C2646C2E9DA3590039C9AC /* Wellness AI */,
+				399F00022E9DA3590039C9AC /* Wellness AI Widget */,
 				39C302942F7DB9B0002BD12D /* Frameworks */,
 				39C2646B2E9DA3590039C9AC /* Products */,
 			);
@@ -64,6 +113,7 @@
 			isa = PBXGroup;
 			children = (
 				39C2646A2E9DA3590039C9AC /* Wellness AI.app */,
+				399F00012E9DA3590039C9AC /* Wellness AI Widget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -79,6 +129,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		399F00032E9DA3590039C9AC /* Wellness AI Widget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 399F00042E9DA3590039C9AC /* Build configuration list for PBXNativeTarget "Wellness AI Widget" */;
+			buildPhases = (
+				399F00052E9DA3590039C9AC /* Sources */,
+				399F00062E9DA3590039C9AC /* Frameworks */,
+				399F00072E9DA3590039C9AC /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				399F00022E9DA3590039C9AC /* Wellness AI Widget */,
+			);
+			name = "Wellness AI Widget";
+			packageProductDependencies = (
+			);
+			productName = "Wellness AI Widget";
+			productReference = 399F00012E9DA3590039C9AC /* Wellness AI Widget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		39C264692E9DA3590039C9AC /* Wellness AI */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 39C264752E9DA35B0039C9AC /* Build configuration list for PBXNativeTarget "Wellness AI" */;
@@ -86,10 +158,12 @@
 				39C264662E9DA3590039C9AC /* Sources */,
 				39C264672E9DA3590039C9AC /* Frameworks */,
 				39C264682E9DA3590039C9AC /* Resources */,
+				399F000A2E9DA3590039C9AC /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				399F000C2E9DA3590039C9AC /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				39C2646C2E9DA3590039C9AC /* Wellness AI */,
@@ -109,8 +183,11 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2600;
-				LastUpgradeCheck = 2620;
+				LastUpgradeCheck = 2640;
 				TargetAttributes = {
+					399F00032E9DA3590039C9AC = {
+						CreatedOnToolsVersion = 26.0.1;
+					};
 					39C264692E9DA3590039C9AC = {
 						CreatedOnToolsVersion = 26.0.1;
 					};
@@ -122,6 +199,7 @@
 			knownRegions = (
 				en,
 				Base,
+				"pt-BR",
 			);
 			mainGroup = 39C264612E9DA3590039C9AC;
 			minimizedProjectReferenceProxies = 1;
@@ -133,11 +211,19 @@
 			projectRoot = "";
 			targets = (
 				39C264692E9DA3590039C9AC /* Wellness AI */,
+				399F00032E9DA3590039C9AC /* Wellness AI Widget */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		399F00072E9DA3590039C9AC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		39C264682E9DA3590039C9AC /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -149,6 +235,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		399F00052E9DA3590039C9AC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		39C264662E9DA3590039C9AC /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -158,12 +251,67 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		399F000C2E9DA3590039C9AC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 399F00032E9DA3590039C9AC /* Wellness AI Widget */;
+			targetProxy = 399F000D2E9DA3590039C9AC /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		399F00082E9DA3590039C9AC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "Wellness AI Widget/Wellness_AI_Widget.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 10;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Wellness AI Widget/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Nessa Widget";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "solo.Wellness-AI.WidgetExtension";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		399F00092E9DA3590039C9AC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "Wellness AI Widget/Wellness_AI_Widget.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 10;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Wellness AI Widget/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Nessa Widget";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "solo.Wellness-AI.WidgetExtension";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		39C264732E9DA35B0039C9AC /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -229,6 +377,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -357,6 +506,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		399F00042E9DA3590039C9AC /* Build configuration list for PBXNativeTarget "Wellness AI Widget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				399F00082E9DA3590039C9AC /* Debug */,
+				399F00092E9DA3590039C9AC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		39C264652E9DA3590039C9AC /* Build configuration list for PBXProject "Wellness AI" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

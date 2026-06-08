@@ -62,7 +62,13 @@
           "groupNumber" : 1,
           "internalID" : "6760845497",
           "introductoryOffers" : [
-
+            {
+              "internalID" : "33A78C56",
+              "numberOfPeriods" : 1,
+              "paymentMode" : "freeTrial",
+              "referenceName" : "7 Days Free Trial",
+              "subscriptionPeriod" : "P1W"
+            }
           ],
           "localizations" : [
             {
@@ -76,9 +82,120 @@
               "locale" : "pt_BR"
             }
           ],
-          "productID" : "nessa.mensal",
+          "productID" : "nessamensal",
           "recurringSubscriptionPeriod" : "P1M",
           "referenceName" : "mensal",
+          "subscriptionGroupID" : "21987090",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "14.99",
+          "familyShareable" : false,
+          "groupNumber" : 2,
+          "internalID" : "6760845498",
+          "introductoryOffers" : [
+            {
+              "internalID" : "44B89D67",
+              "numberOfPeriods" : 1,
+              "paymentMode" : "freeTrial",
+              "referenceName" : "7 Days Free Trial",
+              "subscriptionPeriod" : "P1W"
+            }
+          ],
+          "localizations" : [
+            {
+              "description" : "Unlock all AI features — best value",
+              "displayName" : "Nessa Annual",
+              "locale" : "en_US"
+            },
+            {
+              "description" : "Desbloqueie as funções de IA — melhor custo-benefício",
+              "displayName" : "Assinatura Anual Nessa",
+              "locale" : "pt_BR"
+            }
+          ],
+          "productID" : "nessaanual",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "anual",
+          "subscriptionGroupID" : "21987090",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "1.99",
+          "familyShareable" : false,
+          "groupNumber" : 3,
+          "internalID" : "6760845499",
+          "introductoryOffers" : [
+
+          ],
+          "localizations" : [
+            {
+              "description" : "Unlock all AI features",
+              "displayName" : "Nessa Monthly Legacy",
+              "locale" : "en_US"
+            },
+            {
+              "description" : "Desbloqueie as funções de IA do aplicativo",
+              "displayName" : "Assinatura Mensal Nessa Legada",
+              "locale" : "pt_BR"
+            }
+          ],
+          "productID" : "nessa.mensal",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "nessa.mensal",
+          "subscriptionGroupID" : "21987090",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "2.99",
+          "familyShareable" : false,
+          "groupNumber" : 4,
+          "internalID" : "6760845500",
+          "introductoryOffers" : [
+
+          ],
+          "localizations" : [
+            {
+              "description" : "Unlock all AI features",
+              "displayName" : "Nessa Monthly Legacy 2",
+              "locale" : "en_US"
+            },
+            {
+              "description" : "Desbloqueie as funções de IA do aplicativo",
+              "displayName" : "Assinatura Mensal Nessa Legada 2",
+              "locale" : "pt_BR"
+            }
+          ],
+          "productID" : "nessa.mensal2",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "nessa.mensal2",
           "subscriptionGroupID" : "21987090",
           "type" : "RecurringSubscription",
           "winbackOffers" : [

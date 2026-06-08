@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 internal import HealthKit
 
 class OpenAIAPIManager: ObservableObject {
@@ -14,6 +15,15 @@ class OpenAIAPIManager: ObservableObject {
     @Published var isLoadingNutrition = false
     @Published var isAnalyzingMetric = false
     @Published var lastMetricAnalysis: MetricAnalysis?
+    @Published var isAnalyzingDimension = false
+    @Published var lastDimensionAnalysis: DimensionAnalysis?
+    var userLanguage: String = "English"
+    
+    struct DimensionAnalysis: Codable {
+        let status: String
+        let statusColor: String
+        let analysis: String
+    }
     
     struct MetricAnalysis: Codable {
         let metricName: String
@@ -29,13 +39,14 @@ class OpenAIAPIManager: ObservableObject {
         }
     }
     
-    private let apiKey = "REPLACE_WITH_YOUR_OPENAI_API_KEY" // Do not commit your real key!
+    private let apiKey = AppConfig.openAIKey
     private let baseURL = "https://api.openai.com/v1/chat/completions"
     private var cancellables = Set<AnyCancellable>()
     
     weak var userGoalsManager: UserGoals? // Reference to save recommendations to history
     
     func generateRecommendations(for healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals, workouts: [WorkoutData], sleepData: [SleepSample]) {
+        guard !isLoading else { return }
         isLoading = true
         error = nil
         
@@ -69,15 +80,20 @@ class OpenAIAPIManager: ObservableObject {
                             }
                         },
                         receiveValue: { [weak self] response in
+                            if let content = response.choices.first?.message.content {
+                                print("RAW RECOMMENDATIONS RESPONSE:")
+                                print(content)
+                            }
                             self?.parseRecommendations(from: response)
                         }
                     )
                     .store(in: &cancellables)
-        }
+    }
     
     // MARK: - Category-Specific Recommendation Generation
     
     func generateExerciseRecommendations(for healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals, workouts: [WorkoutData]) {
+        guard !isLoadingExercise else { return }
         isLoadingExercise = true
         error = nil
         
@@ -88,6 +104,7 @@ class OpenAIAPIManager: ObservableObject {
     }
     
     func generateHealthRecommendations(for healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals) {
+        guard !isLoadingHealth else { return }
         isLoadingHealth = true
         error = nil
         
@@ -97,17 +114,19 @@ class OpenAIAPIManager: ObservableObject {
         }
     }
     
-    func generateWellbeingRecommendations(for healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals, sleepData: [SleepSample], stressDataPoints: [StressDataPoint] = []) {
+    func generateWellbeingRecommendations(for healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals, sleepData: [SleepSample], stressDataPoints: [StressDataPoint] = [], stateOfMindSamples: [HKStateOfMind] = []) {
+        guard !isLoadingWellbeing else { return }
         isLoadingWellbeing = true
         error = nil
         
-        let prompt = buildWellbeingPrompt(healthMetrics: healthMetrics, sevenDayMetrics: sevenDayMetrics, userGoals: userGoals, sleepData: sleepData, stressDataPoints: stressDataPoints)
+        let prompt = buildWellbeingPrompt(healthMetrics: healthMetrics, sevenDayMetrics: sevenDayMetrics, userGoals: userGoals, sleepData: sleepData, stressDataPoints: stressDataPoints, stateOfMindSamples: stateOfMindSamples)
         makeRecommendationRequest(prompt: prompt, category: .wellbeing) { [weak self] in
             self?.isLoadingWellbeing = false
         }
     }
     
     func generateNutritionRecommendations(for healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals, weeklyMeals: [String: [CodableMealEntry]] = [:], weeklyHydration: [String: [HydrationEntry]] = [:]) {
+        guard !isLoadingNutrition else { return }
         isLoadingNutrition = true
         error = nil
         
@@ -257,6 +276,265 @@ class OpenAIAPIManager: ObservableObject {
         }.resume()
     }
 
+    /// Generates a focused AI analysis for a specific HealthDimension based on 7-day metric history
+    func generateDimensionAnalysis(dimension: HealthDimension, history: [String: [Double]], goal: String) {
+        isAnalyzingDimension = true
+        lastDimensionAnalysis = nil
+        
+        var historyText = ""
+        for (metricName, values) in history {
+            let valuesText = values.isEmpty ? "No data" : values.map { String(format: "%.1f", $0) }.joined(separator: ", ")
+            historyText += "- \(metricName): \(valuesText)\n"
+        }
+        
+        let weather = WeatherManager.shared.getCurrentWeather()
+        let prompt = """
+        Provide a professional health analysis for the health dimension: "\(dimension.title)".
+        The dimension consists of: \(dimension.metricNames.joined(separator: ", ")).
+        
+        Here is the 7-day historical data (oldest to newest):
+        \(historyText)
+        
+        Current Weather/Meteorology Context:
+        - Temperature: \(String(format: "%.1f", weather.temperature))°C, Relative Humidity: \(Int(weather.humidity))%, Air Quality: \(weather.airQualityIndex) AQI, Pollen Level: \(weather.pollenLevel), Condition: \(weather.condition)
+        
+        User Goals / Focus: \(goal)
+        
+        Analyze the dynamic interactions, correlations, and joint patterns between these metrics, taking into account the weather context if relevant to their goals (e.g. temperature/humidity shifts). Focus on explaining how they influence each other. Keep the language in \(userLanguage).
+        
+        Respond with ONLY one JSON object:
+        {
+          "status": "A short summary status (e.g. 'Highly Recovered', 'Elevated Strain')",
+          "statusColor": "green" | "orange" | "red",
+          "analysis": "Clinical analysis of the metric interactions. Maximum 60 words. Strict constraint."
+        }
+        """
+        
+        let request = createChatRequest(prompt: prompt, maxTokens: 400)
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async { self.isAnalyzingDimension = false }
+            
+            if let data = data {
+                do {
+                    let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+                    let content = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    
+                    var jsonString = content
+                    if jsonString.hasPrefix("```json") {
+                        jsonString = jsonString.replacingOccurrences(of: "```json", with: "")
+                        jsonString = jsonString.replacingOccurrences(of: "```", with: "")
+                        jsonString = jsonString.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    
+                    if let contentData = jsonString.data(using: .utf8) {
+                        DispatchQueue.main.async {
+                            do {
+                                let result = try JSONDecoder().decode(DimensionAnalysis.self, from: contentData)
+                                self.lastDimensionAnalysis = result
+                            } catch {
+                                print("Error decoding dimension analysis JSON: \(error)")
+                            }
+                        }
+                    }
+                } catch {
+                    print("Error decoding dimension analysis: \(error)")
+                }
+            }
+        }.resume()
+    }
+
+    /// Generates a predictive health insight based on 7-day trends and medical history.
+    /// Generates a predictive health insight based on 7-day trends and medical history.
+    func generatePredictiveInsights(
+        healthMetrics: HealthMetrics?,
+        sevenDayMetrics: SevenDayHealthMetrics?,
+        userGoals: UserGoals,
+        workouts: [WorkoutData] = [],
+        sleepData: [SleepSample] = [],
+        stressDataPoints: [StressDataPoint] = [],
+        completion: @escaping (NessaPrediction?) -> Void
+    ) {
+        let richContext = buildNotificationPromptSummary(
+            healthMetrics: healthMetrics,
+            sevenDayMetrics: sevenDayMetrics,
+            workouts: workouts,
+            sleepData: sleepData,
+            stressDataPoints: stressDataPoints,
+            weeklyMeals: userGoals.weeklyMeals,
+            weeklyHydration: userGoals.weeklyHydration,
+            hydrationGoalML: Double(userGoals.hydrationGoalML)
+        )
+
+        let conditions = userGoals.medicalInfo.conditions
+        let allergies = userGoals.medicalInfo.allergies
+        let goals = userGoals.selectedGoals.map { $0.rawValue }
+
+        var userContext = "USER CONTEXT:\n"
+        userContext += "- Goals: \(goals.joined(separator: ", "))\n"
+        if !conditions.isEmpty { userContext += "- Conditions: \(conditions.joined(separator: ", "))\n" }
+        if !allergies.isEmpty  { userContext += "- Allergies: \(allergies.joined(separator: ", "))\n" }
+        let medications = userGoals.medicalInfo.medications
+        if !medications.isEmpty {
+            userContext += "- Medications: \(medications.map { "\($0.name) (\($0.dosage))" }.joined(separator: ", "))\n"
+        }
+
+        let weather = WeatherManager.shared.getCurrentWeather()
+        let weatherContext = """
+        CURRENT WEATHER/METEOROLOGY METRICS:
+        - Temperature: \(String(format: "%.1f", weather.temperature))°C
+        - Relative Humidity: \(Int(weather.humidity))%
+        - Air Quality Index (AQI): \(weather.airQualityIndex)
+        - Pollen level: \(weather.pollenLevel)
+        """
+
+        var dailyBreakdown = "DAILY BREAKDOWN (most recent first):\n"
+        if let d = sevenDayMetrics {
+            for (index, daily) in d.dailyMetrics.enumerated().reversed() {
+                dailyBreakdown += "Day \(index + 1): HR \(Int(daily.heartRate ?? 0)), RHR \(Int(daily.restingHeartRate ?? 0)), HRV \(Int(daily.heartRateVariability ?? 0)), Sleep \(String(format: "%.1f", daily.sleepDuration ?? 0)) h, Steps \(daily.steps ?? 0), Active \(String(format: "%.0f", daily.activeEnergyBurned ?? 0)) kcal, O2 \(String(format: "%.0f", (daily.oxygenSaturation ?? 0) * 100))%, RR \(String(format: "%.1f", daily.respiratoryRate ?? 0))\n"
+            }
+        }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .full
+        let todayString = dateFormatter.string(from: Date())
+
+        let prompt = """
+        You are Nessa, a chief medical AI. Today is \(todayString).
+        COACHING STYLE DIRECTIVE: \(userGoals.coachPersona.promptDirective)
+
+        Analyze the 7-day trend data through the lens of the user's specific GOALS and MEDICAL CONTEXT.
+
+        \(userContext)
+        \(weatherContext)
+
+        FULL HEALTH SNAPSHOT (exercise, health vitals, wellbeing, nutrition — all real user data):
+        \(richContext)
+
+        \(dailyBreakdown)
+
+        TASK: Analyze the user's health score trends based on the 7-day data, calculate score-based metrics on the user's macrocategories (Exercise, Health, Wellbeing, Nutrition, and Condition), and return a structured JSON object analyzing the trends.
+
+        Assign a score (0 to 100) for every macrocategory:
+        - Exercise: Based on daily steps, active energy burned, workout frequency, duration, distance, and intensity.
+        - Health: Based on heart rate, resting heart rate, HRV, oxygen saturation, respiratory rate, wrist temperature, and BMI.
+        - Wellbeing: Based on sleep total hours, sleep stage quality (Deep/REM/Core breakdown), stress scores, time in daylight, and mood.
+        - Nutrition: Based on logged calories vs goal, protein/carbs/fat/fiber balance, hydration (ml logged vs goal), and meal consistency.
+        - Condition: Based on presence, severity, and monitoring status of medical conditions.
+
+        The overallScore must be the mathematical average of these 5 category scores.
+        Identify the worstCategory (the one with the lowest score, select from: "Exercise", "Health", "Wellbeing", "Nutrition", "Condition").
+
+        OUTPUT FORMAT (fill each field exactly as shown):
+        - "headline": A single sentence summarising yesterday's best AND worst category score with a key metric detail. Format: "Yesterday, you achieved a [adjective] score of [bestScore] on [bestCategory] with [bestMetricDetail], but also achieved [worstScore] on [worstCategory], with [worstMetricDetail]." Keep it under 35 words.
+        - "description": A single actionable sentence for today focused on the worst category. Format: "For today, let's focus on increasing the [worstCategory] score by [specific, concrete recommendation]." Keep it under 25 words.
+        - If you detect a clear 3+ day trend in any metric (e.g. declining sleep), weave a brief mention of that trend into the headline or description naturally.
+        - "attentionMetrics": Pick exactly 3 individual health metrics (e.g. "Deep Sleep", "HRV", "Steps", "Hydration", "Resting HR") that need the most attention today based on the real data. For each provide: a "name" (short, human-readable), a "score" (0–100 reflecting how far from healthy), an "icon" (SF Symbol name, e.g. "moon.zzz.fill", "heart.fill", "figure.walk", "drop.fill"), and a "reason" (one short sentence citing the actual value, e.g. "Only 0.5h of deep sleep recorded last night.").
+
+        JSON SCHEMA:
+        {
+          "headline": "<yesterday summary sentence as described above>",
+          "description": "<today focus sentence as described above>",
+          "trajectory": "improving" | "stable" | "declining" | "volatile",
+          "confidence": 0.0-1.0 (float),
+          "keyFactors": ["Factor 1", "Factor 2", "Factor 3"],
+          "nextAction": "The single most important action to stay on track.",
+          "overallScore": 0-100 (integer),
+          "categoryScores": {
+            "Exercise": 0-100 (integer),
+            "Health": 0-100 (integer),
+            "Wellbeing": 0-100 (integer),
+            "Nutrition": 0-100 (integer),
+            "Condition": 0-100 (integer)
+          },
+          "worstCategory": "Exercise" | "Health" | "Wellbeing" | "Nutrition" | "Condition",
+          "attentionMetrics": [
+            { "name": "Deep Sleep", "score": 42, "icon": "moon.zzz.fill", "reason": "Only 0.5h of deep sleep recorded last night." },
+            { "name": "HRV", "score": 55, "icon": "waveform.path.ecg", "reason": "HRV has been trending down for 4 days." },
+            { "name": "Hydration", "score": 60, "icon": "drop.fill", "reason": "Water intake is below your daily goal." }
+          ]
+        }
+        """
+
+        let request = createChatRequest(prompt: prompt, responseFormat: "json_object")
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                if let data = data,
+                   let decoded = try? JSONDecoder().decode(OpenAIResponse.self, from: data),
+                   let content = decoded.choices.first?.message.content,
+                   let jsonData = content.data(using: .utf8),
+                   let prediction = try? JSONDecoder().decode(NessaPrediction.self, from: jsonData) {
+                    completion(prediction)
+                } else {
+                    print("OpenAI generatePredictiveInsights failed. Falling back to local offline prediction.")
+                    if let self = self {
+                        let fallback = self.generateLocalFallbackPrediction(sevenDayMetrics: sevenDayMetrics, userGoals: userGoals)
+                        completion(fallback)
+                    } else {
+                        completion(nil)
+                    }
+                }
+            }
+        }.resume()
+    }
+ 
+    func generateLocalFallbackPrediction(sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals) -> NessaPrediction {
+        let conditions = userGoals.medicalInfo.conditions
+        let hasHypertension = conditions.contains(where: { $0.lowercased().contains("hypertension") })
+        let hasDiabetes = conditions.contains(where: { $0.lowercased().contains("diabetes") })
+        
+        let steps = sevenDayMetrics?.todayMetrics?.steps ?? 0
+        let hrv = sevenDayMetrics?.todayMetrics?.heartRateVariability ?? 50.0
+        
+        let headline = "Circadian Balance"
+        var description = "Based on your recent trends, Nessa's analysis shows a stable score trend."
+        var trajectory = NessaPrediction.TrajectoryType.stable
+        var keyFactors = ["Stable heart rate metrics", "Baseline daily movement"]
+        var nextAction = "Continue monitoring your daily active steps and rest duration."
+        
+        if hasHypertension {
+            if hrv < 40 {
+                trajectory = .declining
+                description = "Based on your recent trends, Nessa's analysis shows elevated stress levels with low HRV."
+                keyFactors = ["Low HRV of \(Int(hrv)) ms", "Elevated cardiovascular load"]
+                nextAction = "Gently walk and prioritize 7.5+ hours of restorative sleep."
+            } else {
+                description = "Based on your recent trends, Nessa's analysis shows healthy cardiac adaptation."
+                keyFactors = ["Healthy HRV of \(Int(hrv)) ms", "Consistent cardiovascular markers"]
+                nextAction = "Limit sodium and track your morning blood pressure."
+            }
+        } else if hasDiabetes {
+            if steps < 5000 {
+                trajectory = .volatile
+                description = "Based on your recent trends, Nessa's analysis shows fluctuating blood glucose due to low activity."
+                keyFactors = ["Sedentary steps count (\(steps))", "Low energy expenditure"]
+                nextAction = "Add a 15-minute brisk walk after your largest meal."
+            } else {
+                description = "Based on your recent trends, Nessa's analysis shows active insulin response."
+                keyFactors = ["Good step count (\(steps))", "Stable active metabolism"]
+                nextAction = "Continue tracking carbohydrate intake with meals."
+            }
+        }
+        
+        return NessaPrediction(
+            headline: headline,
+            description: description,
+            trajectory: trajectory,
+            confidence: 0.75,
+            keyFactors: keyFactors,
+            nextAction: nextAction,
+            overallScore: 80,
+            categoryScores: ["Exercise": 85, "Health": 78, "Wellbeing": 80, "Nutrition": 70, "Condition": 90],
+            worstCategory: "Nutrition",
+            attentionMetrics: [
+                AttentionMetric(name: "Deep Sleep", score: 55, icon: "moon.zzz.fill", reason: "Deep sleep is below the recommended 1.5h."),
+                AttentionMetric(name: "Hydration", score: 60, icon: "drop.fill", reason: "Water intake may be below your daily target."),
+                AttentionMetric(name: "HRV", score: 65, icon: "waveform.path.ecg", reason: "Heart rate variability could benefit from more rest.")
+            ],
+            isFallback: true
+        )
+    }
+
     /// Builds a condensed text summary of all metrics for the notification prompt (exercise, health, wellbeing, nutrition).
     private func buildNotificationPromptSummary(
         healthMetrics: HealthMetrics?,
@@ -375,177 +653,52 @@ class OpenAIAPIManager: ObservableObject {
             .store(in: &cancellables)
     }
     
-    // MARK: - Medical Condition Analysis
+    // MARK: - Medical Voice Input Parsing
     
-    func analyzeMedicalConditions(_ conditions: [String], allergies: [String] = [], completion: @escaping (Result<[PriorityMetric], Error>) -> Void) {
-        guard !conditions.isEmpty || !allergies.isEmpty else {
-            completion(.success([]))
-            return
-        }
-        
-        var medicalInfoText = ""
-        if !conditions.isEmpty {
-            medicalInfoText += "MEDICAL CONDITIONS:\n\(conditions.joined(separator: ", "))\n\n"
-        }
-        if !allergies.isEmpty {
-            medicalInfoText += "ALLERGIES:\n\(allergies.joined(separator: ", "))\n\n"
-        }
-        
+    struct MedicalParsingResult: Codable {
+        let conditions: [String]
+        let medications: [ParsedMedication]
+        let allergies: [String]
+    }
+
+    struct ParsedMedication: Codable {
+        let name: String
+        let dosage: String
+        let frequency: String
+    }
+
+    func parseMedicalDescription(_ text: String, completion: @escaping (Result<MedicalParsingResult, Error>) -> Void) {
         let prompt = """
-        You are a medical AI assistant. Analyze the following medical conditions and allergies to determine which health metrics the user should monitor closely.
+        You are an expert clinical AI. Parse the user's spoken or typed text description of their medical profile.
         
-        \(medicalInfoText)
+        Text: "\(text)"
         
-        CRITICAL: You MUST ONLY recommend metrics from this EXACT list. DO NOT suggest any metrics not on this list:
+        TASK:
+        Extract the following:
+        1. Medical conditions (e.g. Hypertension, Asthma). Convert casual terms to standard clinical names (e.g. "high blood pressure" -> "Hypertension", "asthma" -> "Asthma", "sugar" or "diabetes" -> "Type 2 Diabetes" or "Type 1 Diabetes" based on context).
+        2. Medications (with name, dosage, and frequency). If dosage or frequency is not mentioned, return empty string for those fields.
+        3. Allergies (e.g. Penicillin, Peanuts).
         
-        AVAILABLE METRICS IN THIS APP (choose ONLY from these):
-        1. "Heart Rate" - Current heart rate in BPM
-        2. "Resting Heart Rate" - Resting heart rate in BPM
-        3. "Heart Rate Variability" - HRV in milliseconds (stress indicator)
-        4. "Oxygen Saturation" - Blood oxygen level as percentage
-        5. "Respiratory Rate" - Breathing rate in breaths per minute
-        6. "Body Weight" - Weight in kilograms
-        7. "BMI" - Body Mass Index (calculated from weight and height)
-        8. "Sleep Duration" - Hours of sleep per night
-        9. "Steps" - Daily step count
-        10. "Active Energy" - Active calories burned in kcal
-        11. "Wrist Temperature" - Temperature in Celsius (sleep tracking)
-        12. "Audio Exposure" - Environmental noise level in dB
-        13. "Time in Daylight" - Minutes spent outdoors in daylight
-        14. "Stress Level" - Calculated stress score 0-100 (from HRV and heart rate)
-        
-        METRICS NOT AVAILABLE (DO NOT RECOMMEND):
-        - Blood Pressure (not available)
-        - Blood Glucose (not available)
-        - Blood Sugar (not available)
-        - Cholesterol (not available)
-        - A1C (not available)
-        - Medication adherence (not available)
-        - Any lab values or blood tests (not available)
-        
-        IMPORTANT REQUIREMENTS:
-        1. You MUST return EXACTLY 2 or 4 metrics (NOT 3, NOT 5, ONLY 2 or 4)
-        2. Each metric should be relevant to AT LEAST ONE of the user's conditions
-        3. Try to ensure ALL user conditions are represented by at least one metric
-        4. If a metric is relevant to MULTIPLE conditions from the user's list, include ALL relevant conditions in the "relatedCondition" field separated by commas
-        5. Prioritize metrics that cover more conditions
-        
-        SELECTION STRATEGY:
-        - If user has 1-2 conditions: Return 2 metrics
-        - If user has 3+ conditions: Return 4 metrics
-        - Choose metrics that collectively cover ALL the user's conditions when possible
-        - If a single metric applies to multiple conditions, that's preferred (list all conditions for that metric)
-        
-        Return ONLY a JSON array with EXACTLY 2 or 4 metrics in this exact structure:
-        
-        [
-          {
-            "metricName": "Heart Rate Variability",
-            "icon": "waveform.path.ecg",
-            "color": "red",
-            "healthyRange": "20-100 ms",
-            "reason": "Essential for monitoring cardiovascular stress in hypertension patients",
-            "relatedCondition": "Hypertension, Diabetes"
-          }
-        ]
-        
-        Note: The "relatedCondition" field should list ALL user conditions that this metric helps monitor (comma-separated).
-        
-        REMINDER: Your response MUST contain EXACTLY 2 or 4 metrics. Count your metrics before responding!
-        
-        Available SF Symbol icons you can use:
-        - "heart.fill" - Heart Rate, Resting Heart Rate
-        - "waveform.path.ecg" - Heart Rate Variability
-        - "lungs.fill" - Respiratory Rate, Oxygen Saturation
-        - "drop.fill" - Oxygen Saturation
-        - "flame.fill" - Active Energy, calories
-        - "bed.double.fill" - Sleep Duration
-        - "figure.walk" - Steps
-        - "scalemass.fill" - Body Weight, BMI
-        - "thermometer" - Wrist Temperature
-        - "brain.head.profile" - Stress Level
-        - "sun.max.fill" - Time in Daylight
-        - "waveform" - Audio Exposure
-        
-        Available colors (use lowercase):
-        - red, orange, yellow, green, blue, purple, pink, cyan
-        
-        STRICT RULES:
-        1. ONLY use metric names from the "AVAILABLE METRICS" list above
-        2. Use the EXACT metric name as written (e.g., "Heart Rate Variability" not "HRV")
-        3. If a condition typically requires a metric we don't have, choose the next best alternative from available metrics
-        4. Return EXACTLY 2 or 4 metrics (2 for 1-2 conditions, 4 for 3+ conditions)
-        5. Each metric must be directly relevant to monitoring at least one of the user's conditions
-        6. Try to ensure ALL user conditions are covered by at least one metric
-        7. Provide clear medical reasoning for each metric
-        
-        Example 1 - Single condition (Hypertension) - Return 2 metrics:
-        [
-          {
-            "metricName": "Resting Heart Rate",
-            "icon": "heart.fill",
-            "color": "red",
-            "healthyRange": "60-100 BPM",
-            "reason": "Monitors cardiovascular health; elevated resting heart rate can indicate uncontrolled hypertension",
-            "relatedCondition": "Hypertension"
-          },
-          {
-            "metricName": "Heart Rate Variability",
-            "icon": "waveform.path.ecg",
-            "color": "green",
-            "healthyRange": "20-100 ms",
-            "reason": "Low HRV indicates poor cardiovascular health and stress, both risk factors for hypertension",
-            "relatedCondition": "Hypertension"
-          }
-        ]
-        
-        Example 2 - Multiple conditions (Diabetes, Hypertension, Obesity) - Return 4 metrics:
-        [
-          {
-            "metricName": "Resting Heart Rate",
-            "icon": "heart.fill",
-            "color": "red",
-            "healthyRange": "60-100 BPM",
-            "reason": "Elevated resting heart rate indicates cardiovascular stress from hypertension and obesity",
-            "relatedCondition": "Hypertension, Obesity"
-          },
-          {
-            "metricName": "Body Weight",
-            "icon": "scalemass.fill",
-            "color": "orange",
-            "healthyRange": "Varies by height",
-            "reason": "Weight management is crucial for diabetes control and obesity treatment",
-            "relatedCondition": "Diabetes, Obesity"
-          },
-          {
-            "metricName": "Sleep Duration",
-            "icon": "bed.double.fill",
-            "color": "purple",
-            "healthyRange": "7-9 hours",
-            "reason": "Poor sleep affects blood sugar control in diabetes and weight management",
-            "relatedCondition": "Diabetes, Obesity"
-          },
-          {
-            "metricName": "Steps",
-            "icon": "figure.walk",
-            "color": "green",
-            "healthyRange": "8,000-10,000",
-            "reason": "Daily activity helps manage all three conditions: blood sugar, blood pressure, and weight",
-            "relatedCondition": "Diabetes, Hypertension, Obesity"
-          }
-        ]
+        Return ONLY a JSON object with this schema:
+        {
+          "conditions": ["Condition A", "Condition B"],
+          "medications": [
+            {
+              "name": "Medication Name",
+              "dosage": "Dosage",
+              "frequency": "Frequency"
+            }
+          ],
+          "allergies": ["Allergy A"]
+        }
         """
         
-        let request = createChatRequest(prompt: prompt)
+        let request = createChatRequest(prompt: prompt, responseFormat: "json_object")
         
         URLSession.shared.dataTaskPublisher(for: request)
             .tryMap { data, response in
                 if let httpResponse = response as? HTTPURLResponse, !(200..<300).contains(httpResponse.statusCode) {
-                    if let apiError = try? JSONDecoder().decode(OpenAIErrorResponse.self, from: data) {
-                        throw NSError(domain: "OpenAIError", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: apiError.error.message])
-                    }
-                    let message = String(data: data, encoding: .utf8) ?? "Unknown API Error"
-                    throw NSError(domain: "HTTPError", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Status \(httpResponse.statusCode): \(message)"])
+                    throw NSError(domain: "HTTPError", code: httpResponse.statusCode, userInfo: nil)
                 }
                 return data
             }
@@ -559,39 +712,605 @@ class OpenAIAPIManager: ObservableObject {
                 },
                 receiveValue: { response in
                     guard let content = response.choices.first?.message.content else {
-                        completion(.failure(NSError(domain: "No response", code: -1, userInfo: nil)))
+                        completion(.failure(NSError(domain: "ParsingError", code: -1, userInfo: nil)))
                         return
                     }
                     
-                    // Clean up the content
-                    var jsonString = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    var jsonString = content
                     if jsonString.hasPrefix("```json") {
                         jsonString = jsonString.replacingOccurrences(of: "```json", with: "")
                         jsonString = jsonString.replacingOccurrences(of: "```", with: "")
                         jsonString = jsonString.trimmingCharacters(in: .whitespacesAndNewlines)
                     }
                     
-                    guard let jsonData = jsonString.data(using: .utf8),
-                          let parsedMetrics = try? JSONDecoder().decode([ParsedPriorityMetric].self, from: jsonData) else {
-                        completion(.failure(NSError(domain: "Failed to parse priority metrics", code: -1, userInfo: nil)))
+                    guard let cleanedData = jsonString.data(using: .utf8) else {
+                        completion(.failure(NSError(domain: "ParsingError", code: -2, userInfo: nil)))
                         return
                     }
                     
-                    let priorityMetrics = parsedMetrics.map { parsed in
-                        PriorityMetric(
-                            metricName: parsed.metricName,
-                            icon: parsed.icon,
-                            color: parsed.color,
-                            healthyRange: parsed.healthyRange,
-                            reason: parsed.reason,
-                            relatedCondition: parsed.relatedCondition
-                        )
+                    do {
+                        let parsed = try JSONDecoder().decode(MedicalParsingResult.self, from: cleanedData)
+                        completion(.success(parsed))
+                    } catch {
+                        completion(.failure(error))
                     }
-                    
-                    completion(.success(priorityMetrics))
                 }
             )
             .store(in: &cancellables)
+    }
+
+    // MARK: - Medical Condition Analysis
+    
+    func analyzeMedicalConditions(_ conditions: [String], medications: [Medication] = [], allergies: [String] = [], healthHistory: SevenDayHealthMetrics? = nil, weeklyMeals: [String: [CodableMealEntry]] = [:], completion: @escaping (Result<AnalysisResult, Error>) -> Void) {
+        guard !conditions.isEmpty || !medications.isEmpty || !allergies.isEmpty else {
+            completion(.success(AnalysisResult(priorityMetrics: [], recommendedTabs: [])))
+            return
+        }
+        
+        var medicalInfoText = ""
+        if !conditions.isEmpty {
+            medicalInfoText += "MEDICAL CONDITIONS:\n\(conditions.joined(separator: ", "))\n\n"
+        }
+        if !medications.isEmpty {
+            let medsText = medications.map { "\($0.name) (\($0.dosage), \($0.frequency))" }.joined(separator: ", ")
+            medicalInfoText += "MEDICATIONS:\n\(medsText)\n\n"
+        }
+        if !allergies.isEmpty {
+            medicalInfoText += "ALLERGIES:\n\(allergies.joined(separator: ", "))\n\n"
+        }
+        
+        let rangeDays = userGoalsManager?.historicalAverageDays ?? 5
+        var historyText = "RECENT DATA COVERAGE (Last \(rangeDays) Days):\n"
+        if let history = healthHistory {
+            let coverageMap: [String: Any?] = [
+                "Blood Pressure": history.bloodPressure,
+                "Oxygen Saturation": history.avgOxygenSaturation,
+                "Body Weight": history.bodyMass,
+                "Sleep": history.avgSleepDuration,
+                "Wrist Temp": history.avgWristTemperature,
+                "Heart Rate": history.avgHeartRate,
+                "HRV": history.avgHeartRateVariability
+            ]
+            
+            for (metric, value) in coverageMap.sorted(by: { $0.key < $1.key }) {
+                historyText += "- \(metric): \(value != nil ? "Available" : "NOT FOUND")\n"
+            }
+        } else {
+            historyText += "No recent health metric history available.\n"
+        }
+        
+        // Aggregate nutrition data
+        var nutritionText = ""
+        if !weeklyMeals.isEmpty {
+            var totalCal = 0.0, totalPro = 0.0, totalCarb = 0.0, totalFat = 0.0
+            var totalFiber = 0.0, totalSugar = 0.0, totalSodium = 0.0
+            var daysWithMeals = 0
+            for (_, meals) in weeklyMeals where !meals.isEmpty {
+                daysWithMeals += 1
+                for meal in meals {
+                    totalCal += meal.calories
+                    totalPro += meal.protein
+                    totalCarb += meal.carbohydrates
+                    totalFat += meal.fat
+                    totalFiber += meal.fiber
+                    totalSugar += meal.sugar
+                    totalSodium += meal.sodium
+                }
+            }
+            if daysWithMeals > 0 {
+                let avgCal  = totalCal  / Double(daysWithMeals)
+                let avgPro  = totalPro  / Double(daysWithMeals)
+                let avgCarb = totalCarb / Double(daysWithMeals)
+                let avgFat  = totalFat  / Double(daysWithMeals)
+                let avgFiber = totalFiber / Double(daysWithMeals)
+                let avgSugar = totalSugar / Double(daysWithMeals)
+                let avgSodium = totalSodium / Double(daysWithMeals)
+                nutritionText = """
+                
+                NUTRITION DATA (\(rangeDays)-Day Daily Averages from food logs):
+                - Calories: \(String(format: "%.0f", avgCal)) kcal/day
+                - Protein: \(String(format: "%.1f", avgPro)) g/day
+                - Carbohydrates: \(String(format: "%.1f", avgCarb)) g/day
+                - Fat: \(String(format: "%.1f", avgFat)) g/day
+                - Dietary Fiber: \(String(format: "%.1f", avgFiber)) g/day
+                - Sugar intake: \(String(format: "%.1f", avgSugar)) g/day
+                - Sodium: \(String(format: "%.0f", avgSodium)) mg/day
+                (Based on \(daysWithMeals) days of logged meals)
+                """
+            } else {
+                nutritionText = "\nNUTRITION DATA: No food logs available for this period."
+            }
+        } else {
+            nutritionText = "\nNUTRITION DATA: Not available (user has not logged meals)."
+        }
+
+        let prompt = """
+        You are a medical AI assistant. Your ONLY job is to identify monitoring metrics for the EXACT conditions and allergies listed below. DO NOT generate metrics for any condition not explicitly listed.
+        
+        \(medicalInfoText)
+        
+        \(historyText)
+        \(nutritionText)
+        
+        STRICT RULES:
+        - Only generate metrics for the medical conditions and allergies listed above.
+        - If the user has NO conditions and only allergies, generate ONLY allergy-relevant metrics (e.g. air quality, humidity, respiratory).
+        - If the list is empty, return an empty priorityMetrics array.
+        - Set "relatedCondition" to the EXACT condition/allergy name from the user's list above.
+        - Be comprehensive per condition — generate all clinically important metrics for each listed condition.
+        - Every metric returned in priorityMetrics MUST have a metricName that matches EXACTLY (case-sensitive) one of the strings listed in AVAILABLE NATIVE METRICS, AVAILABLE NUTRITION METRICS, or MANUAL METRICS.
+        - DO NOT invent, abbreviate, or modify metric names under any circumstances. If a metric name is not in the three lists below, it is NOT supported and will crash the app.
+        - NEVER output "HRV" as a metricName (use "Heart Rate Variability"). NEVER output "Calcium Intake", "Fragrance Exposure", "Bone Density Test", or "Vitamin D Levels" (they are not supported).
+        - If a condition or allergy is not in the CONDITION REFERENCE table, do not invent new metrics for it. Only suggest general metrics that exist in the available lists (such as "Body Weight", "Steps", "Active Energy", "Sleep Duration") if applicable, or do not suggest any metrics for it at all.
+        
+        CONDITION REFERENCE (only apply the row that matches a user's listed condition):
+        | Condition | Key metrics to include |
+        |-----------|------------------------|
+        | Diabetes / Type 1 Diabetes / Type 2 Diabetes / Insulin Resistance | Blood Glucose, Sugar Intake, Carbohydrate Intake, HbA1c, Body Weight, BMI, Blood Pressure, Steps, Active Energy, Dietary Fiber, Sodium Intake |
+        | Hypertension / High Blood Pressure | Blood Pressure, Sodium Intake, Body Weight, Resting Heart Rate, Heart Rate Variability, Stress Level, Steps, Active Energy |
+        | Asthma / COPD / Respiratory | Oxygen Saturation, Respiratory Rate, Peak Flow, Audio Exposure, Time in Daylight |
+        | Heart Disease / Coronary Artery Disease / Arrhythmia | Resting Heart Rate, Heart Rate Variability, Blood Pressure, Oxygen Saturation, Active Energy, Steps, Cholesterol |
+        | Thyroid / Hypothyroidism / Hyperthyroidism | Body Weight, Resting Heart Rate, Wrist Temperature, Mood, Sleep Duration, Active Energy |
+        | Anxiety / Depression / Mental Health | Heart Rate Variability, Stress Level, Sleep Duration, Mood, Time in Daylight, Steps |
+        | Gout | Blood Pressure, Body Weight, Sodium Intake, Calorie Intake |
+        | Chronic Kidney Disease | Blood Pressure, Body Weight, Heart Rate, Oxygen Saturation |
+        | Migraine | Sleep Duration, Stress Level, Heart Rate Variability |
+        | Fibromyalgia | Sleep Duration, Stress Level, Heart Rate Variability, Body Weight |
+        | Rheumatoid Arthritis | Body Weight, Sleep Duration, Wrist Temperature, Heart Rate Variability |
+        | Crohn's Disease / Celiac Disease / Gluten Allergy / Gluten | Body Weight, Calorie Intake, Protein Intake, Dietary Fiber |
+        | Osteoarthritis / Osteoporosis | Steps, Active Energy, Body Weight, Sleep Duration |
+        | Eczema / Psoriasis / Fragrance Allergy / Fragrance | Sleep Duration, Humidity Level, Stress Level, Wrist Temperature |
+        | GERD / IBS / Lactose Intolerance / Lactose Allergy / Lactose | Calorie Intake, Carbohydrate Intake, Fat Intake, Sugar Intake |
+        | Sleep Apnea | Sleep Duration, Oxygen Saturation, Blood Pressure, Heart Rate |
+        | Obesity | Body Weight, BMI, Steps, Active Energy, Calorie Intake |
+        | Anemia | Heart Rate, Oxygen Saturation, Resting Heart Rate, Active Energy |
+        | Insomnia | Sleep Duration, Stress Level, Heart Rate Variability, Time in Daylight |
+        | Dust Mite Allergy / Mold Allergy / Pet Dander Allergy / Dust Mite | Respiratory Rate, Oxygen Saturation, Humidity Level (manual), Sleep Duration |
+        | Pollen / Seasonal Allergy / Pollen Allergy | Respiratory Rate, Oxygen Saturation, Time in Daylight, Peak Flow |
+        | Food Allergy | (monitor via food logs — no native metrics, skip unless nutrition data relevant) |
+        
+        ALLERGY MONITORING: For environmental allergies (dust mite, pollen, mold), suggest specific equipment like humidity monitors or air quality sensors if no data is available.
+        
+        AVAILABLE NATIVE METRICS (auto-tracked by Apple Watch/iPhone — set isManual: false):
+        "Heart Rate", "Resting Heart Rate", "Heart Rate Variability", "Oxygen Saturation", "Respiratory Rate", "Body Weight", "BMI", "Sleep Duration", "Steps", "Active Energy", "Wrist Temperature", "Audio Exposure", "Time in Daylight", "Stress Level", "Mood"
+        
+        AVAILABLE NUTRITION METRICS (from food logs — use metricName exactly as written — set isManual: false):
+        "Sugar Intake", "Carbohydrate Intake", "Calorie Intake", "Protein Intake", "Dietary Fiber", "Sodium Intake", "Fat Intake"
+        
+        MANUAL METRICS (user logs manually — set isManual: true):
+        "Blood Pressure", "Blood Glucose", "HbA1c", "Cholesterol", "Peak Flow", "Blood Ketones", "Triglycerides", "Humidity Level"
+        
+        Return ONLY a JSON object:
+        {
+          "recommendedTabs": ["TabName1", "TabName2"],
+          "priorityMetrics": [
+            {
+              "metricName": "[METRIC NAME]",
+              "icon": "[SF SYMBOL]",
+              "color": "[COLOR]",
+              "healthyRange": "[RANGE]",
+              "reason": "[WHY THIS METRIC MATTERS for this specific condition/allergy]",
+              "relatedCondition": "[EXACT condition/allergy name from user's list]",
+              "isManual": true/false,
+              "equipment": {
+                 "name": "Specific Model Name (e.g. OMRON Silver, Withings Body+)",
+                 "type": "Category (e.g. Smart BP Monitor, Pulse Oximeter)",
+                 "reason": "Tracking this is critical for your [Condition] and we detected no data in your history.",
+                 "storeLinks": [{"storeName": "Amazon", "url": "https://amazon.com"}]
+              }
+            }
+          ]
+        }
+        """
+        
+        let request = createChatRequest(prompt: prompt, responseFormat: "json_object")
+        
+        URLSession.shared.dataTaskPublisher(for: request)
+            .tryMap { data, response in
+                if let httpResponse = response as? HTTPURLResponse, !(200..<300).contains(httpResponse.statusCode) {
+                    throw NSError(domain: "HTTPError", code: httpResponse.statusCode, userInfo: nil)
+                }
+                return data
+            }
+            .decode(type: OpenAIResponse.self, decoder: JSONDecoder())
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { [weak self] result in
+                    if case .failure(let error) = result {
+                        print("OpenAI analyzeMedicalConditions failed: \(error.localizedDescription). Falling back to local offline analysis.")
+                        if let self = self {
+                            let fallback = self.generateLocalFallbackAnalysis(conditions: conditions, medications: medications, allergies: allergies)
+                            completion(.success(fallback))
+                        } else {
+                            completion(.failure(error))
+                        }
+                    }
+                },
+                receiveValue: { [weak self] response in
+                    guard let content = response.choices.first?.message.content,
+                          let jsonData = content.data(using: .utf8),
+                          let parsed = try? JSONDecoder().decode(ParsedAnalysisResult.self, from: jsonData) else {
+                        print("OpenAI parse failed. Falling back to local offline analysis.")
+                        if let self = self {
+                            let fallback = self.generateLocalFallbackAnalysis(conditions: conditions, medications: medications, allergies: allergies)
+                            completion(.success(fallback))
+                        } else {
+                            completion(.failure(NSError(domain: "ParsingError", code: -1, userInfo: nil)))
+                        }
+                        return
+                    }
+                    
+                    let metrics = parsed.priorityMetrics.map { p in
+                        PriorityMetric(
+                            metricName: p.metricName,
+                            icon: p.icon,
+                            color: p.color,
+                            healthyRange: p.healthyRange,
+                            reason: p.reason,
+                            relatedCondition: p.relatedCondition,
+                            isManual: p.isManual ?? false,
+                            requiresImage: p.requiresImage ?? false,
+                            imageAnalysisPrompt: p.imageAnalysisPrompt,
+                            weatherContext: p.weatherContext ?? false,
+                            manualWorkaround: p.manualWorkaround,
+                            isSideEffectMonitoring: p.isSideEffectMonitoring ?? false,
+                            equipment: p.equipment != nil ? EquipmentSuggestion(
+                                name: p.equipment!.name,
+                                type: p.equipment!.type,
+                                reason: p.equipment!.reason,
+                                storeLinks: p.equipment!.storeLinks.map { StoreLink(storeName: $0.storeName, url: $0.url) }
+                            ) : nil
+                        )
+                    }
+                    
+                    completion(.success(AnalysisResult(priorityMetrics: metrics, recommendedTabs: parsed.recommendedTabs)))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    func generateLocalFallbackAnalysis(conditions: [String], medications: [Medication] = [], allergies: [String] = []) -> AnalysisResult {
+        var priorityMetrics: [PriorityMetric] = []
+        var recommendedTabs: [String] = []
+        
+        let allConditions = conditions + allergies
+        
+        for condition in allConditions {
+            let condLower = condition.lowercased()
+            if condLower.contains("diabetes") || condLower.contains("insulin") {
+                recommendedTabs.append("Diabetes Management")
+                priorityMetrics.append(contentsOf: [
+                    PriorityMetric(metricName: "Blood Glucose", icon: "drop.fill", color: "red", healthyRange: "70-130 mg/dL", reason: "Direct monitoring of glucose levels.", relatedCondition: condition, isManual: true),
+                    PriorityMetric(metricName: "Sugar Intake", icon: "fork.knife", color: "orange", healthyRange: "< 25g/day", reason: "Limit simple sugars to prevent spikes.", relatedCondition: condition, isManual: false),
+                    PriorityMetric(metricName: "Carbohydrate Intake", icon: "doc.text", color: "orange", healthyRange: "130-200g/day", reason: "Manage insulin requirement.", relatedCondition: condition, isManual: false),
+                    PriorityMetric(metricName: "Blood Pressure", icon: "heart.text.square", color: "orange", healthyRange: "< 120/80 mmHg", reason: "Monitor cardiovascular risk in diabetes.", relatedCondition: condition, isManual: true)
+                ])
+            } else if condLower.contains("hypertension") || condLower.contains("blood pressure") {
+                recommendedTabs.append("Condition Management")
+                recommendedTabs.append("Cardiovascular Health")
+                priorityMetrics.append(contentsOf: [
+                    PriorityMetric(metricName: "Blood Pressure", icon: "heart.text.square", color: "orange", healthyRange: "< 120/80 mmHg", reason: "Direct arterial pressure monitoring.", relatedCondition: condition, isManual: true),
+                    PriorityMetric(metricName: "Sodium Intake", icon: "drop.circle", color: "blue", healthyRange: "< 2300 mg", reason: "Track sodium to avoid volume load.", relatedCondition: condition, isManual: false),
+                    PriorityMetric(metricName: "Body Weight", icon: "scalemass", color: "blue", healthyRange: "Stable weight", reason: "Avoid fluid retention and monitor metabolic load.", relatedCondition: condition, isManual: false),
+                    PriorityMetric(metricName: "Resting Heart Rate", icon: "heart.fill", color: "red", healthyRange: "60-100 BPM", reason: "Assess resting sympathetic activity.", relatedCondition: condition, isManual: false)
+                ])
+            } else if condLower.contains("asthma") || condLower.contains("copd") || condLower.contains("respiratory") {
+                recommendedTabs.append("Respiratory Health")
+                recommendedTabs.append("Allergy Management")
+                priorityMetrics.append(contentsOf: [
+                    PriorityMetric(metricName: "Oxygen Saturation", icon: "lungs.fill", color: "blue", healthyRange: "95-100%", reason: "Ensure adequate pulmonary exchange.", relatedCondition: condition, isManual: false),
+                    PriorityMetric(metricName: "Respiratory Rate", icon: "wind", color: "blue", healthyRange: "12-20 breaths/min", reason: "Monitor respiratory strain.", relatedCondition: condition, isManual: false),
+                    PriorityMetric(metricName: "Peak Flow", icon: "gauge", color: "orange", healthyRange: "400-600 L/min", reason: "Measure exhalation capacity.", relatedCondition: condition, isManual: true),
+                    PriorityMetric(metricName: "Time in Daylight", icon: "sun.max.fill", color: "yellow", healthyRange: "15-30 min", reason: "Natural ventilation and daylight benefits.", relatedCondition: condition, isManual: false)
+                ])
+            } else if condLower.contains("anxiety") || condLower.contains("depression") || condLower.contains("mental") {
+                recommendedTabs.append("Mental Health")
+                recommendedTabs.append("Sleep")
+                priorityMetrics.append(contentsOf: [
+                    PriorityMetric(metricName: "Heart Rate Variability", icon: "waveform.path.ecg", color: "purple", healthyRange: "30-100 ms", reason: "Assess parasympathetic tone and stress.", relatedCondition: condition, isManual: false),
+                    PriorityMetric(metricName: "Stress Level", icon: "brain", color: "purple", healthyRange: "10-50/100", reason: "Monitor stress response.", relatedCondition: condition, isManual: false),
+                    PriorityMetric(metricName: "Sleep Duration", icon: "bed.double.fill", color: "indigo", healthyRange: "7-9 hours", reason: "Restorative sleep supports mental resilience.", relatedCondition: condition, isManual: false),
+                    PriorityMetric(metricName: "Mood", icon: "face.smiling", color: "yellow", healthyRange: "6-10", reason: "Track subjective daily wellbeing.", relatedCondition: condition, isManual: false)
+                ])
+            }
+        }
+        
+        if priorityMetrics.isEmpty && !allConditions.isEmpty {
+            let firstCond = allConditions[0]
+            recommendedTabs.append("Health Overview")
+            priorityMetrics.append(contentsOf: [
+                PriorityMetric(metricName: "Steps", icon: "figure.walk", color: "green", healthyRange: "8000-12000", reason: "Maintain active baseline physical levels.", relatedCondition: firstCond, isManual: false),
+                PriorityMetric(metricName: "Sleep Duration", icon: "bed.double.fill", color: "indigo", healthyRange: "7-9 hours", reason: "Restorative recovery helper.", relatedCondition: firstCond, isManual: false)
+            ])
+        }
+        
+        for med in medications {
+            let name = med.name.lowercased()
+            if name.contains("metformin") || name.contains("insulin") {
+                if let idx = priorityMetrics.firstIndex(where: { $0.metricName == "Blood Glucose" }) {
+                    let original = priorityMetrics[idx]
+                    priorityMetrics[idx] = PriorityMetric(metricName: original.metricName, icon: original.icon, color: original.color, healthyRange: original.healthyRange, reason: "Monitoring for \(med.name) efficacy.", relatedCondition: original.relatedCondition, isManual: original.isManual, isSideEffectMonitoring: false)
+                }
+            } else if name.contains("lisinopril") || name.contains("metoprolol") {
+                if let idx = priorityMetrics.firstIndex(where: { $0.metricName == "Blood Pressure" }) {
+                    let original = priorityMetrics[idx]
+                    priorityMetrics[idx] = PriorityMetric(metricName: original.metricName, icon: original.icon, color: original.color, healthyRange: original.healthyRange, reason: "Monitoring blood pressure response for \(med.name).", relatedCondition: original.relatedCondition, isManual: original.isManual, isSideEffectMonitoring: false)
+                }
+            }
+        }
+        
+        return AnalysisResult(priorityMetrics: priorityMetrics, recommendedTabs: Array(Set(recommendedTabs)))
+    }
+
+    // MARK: - Image Analysis for Priority Metrics
+    func analyzePriorityMetricImage(image: UIImage, metric: PriorityMetric, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let imageData = image.jpegData(compressionQuality: 0.8) else {
+            completion(.failure(NSError(domain: "ImageError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to process image"])))
+            return
+        }
+        
+        let base64Image = imageData.base64EncodedString()
+        let prompt = metric.imageAnalysisPrompt ?? "Analyze this health-related image for the metric: \(metric.metricName)."
+        
+        let systemPrompt = "You are a health AI specialized in medical image analysis. Analyze the image provided based on the user's specific health metric goal. Provide a concise insight."
+        
+        let payload: [String: Any] = [
+            "model": "gpt-4o-mini",
+            "messages": [
+                [
+                    "role": "system",
+                    "content": systemPrompt
+                ],
+                [
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "text",
+                            "text": prompt
+                        ],
+                        [
+                            "type": "image_url",
+                            "image_url": [
+                                "url": "data:image/jpeg;base64,\(base64Image)"
+                            ]
+                        ]
+                    ]
+                ]
+            ],
+            "max_tokens": 300
+        ]
+        
+        guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            
+            guard let data = data else {
+                completion(.failure(NSError(domain: "No data", code: -1, userInfo: nil)))
+                return
+            }
+            
+            do {
+                let response = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+                if let content = response.choices.first?.message.content {
+                    DispatchQueue.main.async {
+                        completion(.success(content))
+                    }
+                } else {
+                    completion(.failure(NSError(domain: "Invalid response", code: -1, userInfo: nil)))
+                }
+            } catch {
+                completion(.failure(error))
+            }
+        }.resume()
+    }
+    
+    func generateExecutiveSummary(metrics: HealthMetrics?, history: SevenDayHealthMetrics?, userGoals: UserGoals, completion: @escaping (String?) -> Void) {
+        var context = "MEDICAL INFO:\n"
+        if !userGoals.medicalInfo.conditions.isEmpty {
+            context += "Conditions: \(userGoals.medicalInfo.conditions.joined(separator: ", "))\n"
+        }
+        if !userGoals.medicalInfo.medications.isEmpty {
+            let meds = userGoals.medicalInfo.medications.map { "\($0.name) (\($0.dosage))" }
+            context += "Medications: \(meds.joined(separator: ", "))\n"
+        }
+        
+        if let m = metrics {
+            context += "CURRENT VITALS:\n"
+            context += "- HR: \(m.heartRate.map { "\(Int($0)) BPM" } ?? "N/A"), HRV: \(m.heartRateVariability.map { "\(Int($0)) ms" } ?? "N/A")\n"
+        }
+        
+        let prompt = """
+        You are a Chief Medical AI. Generate a 'Clinical Executive Summary' for a doctor reviewing this patient's PDF report.
+        
+        \(context)
+        
+        REQUIREMENTS:
+        1. Professional, clinical tone (suitable for a physician).
+        2. Identify the most pressing concern or most stable finding based on the vitals and medical info.
+        3. Max 50-60 words. 1-2 paragraphs.
+        4. Focus on 'Findings' rather than raw data.
+        """
+        
+        let request = createChatRequest(prompt: prompt)
+        
+        URLSession.shared.dataTaskPublisher(for: request)
+            .tryMap { data, _ in data }
+            .decode(type: OpenAIResponse.self, decoder: JSONDecoder())
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { response in
+                    completion(response.choices.first?.message.content)
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    /// Simulates Vision API to extract medication details from an image
+    func analyzePrescriptionImage(imageData: Data, completion: @escaping (Medication?) -> Void) {
+        // In a real implementation, this would use gpt-4o with the image base64 encoded
+        // For the prototype, we simulate a network delay and return mock data
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            let mockMedication = Medication(
+                name: "Metformin",
+                dosage: "500mg",
+                frequency: "Twice daily with meals"
+            )
+            completion(mockMedication)
+        }
+    }
+    
+    func extractMetricFromText(text: String, expectedMetric: String, completion: @escaping (String?) -> Void) {
+        let prompt = """
+        You are a medical data parser. Extract the numerical value for '\(expectedMetric)' from the user's text.
+        Text: "\(text)"
+        
+        RULES:
+        - Return ONLY the exact value and unit, nothing else (e.g. "120/80 mmHg", "5.4 mmol/L", "450 L/min").
+        - If you cannot find a relevant value, return "UNKNOWN".
+        """
+        
+        let request = createChatRequest(prompt: prompt)
+        
+        URLSession.shared.dataTaskPublisher(for: request)
+            .tryMap { data, _ in data }
+            .decode(type: OpenAIResponse.self, decoder: JSONDecoder())
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { response in
+                    let val = response.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    completion(val == "UNKNOWN" ? nil : val)
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    func generateInsightsForCondition(_ condition: String, metrics: HealthMetrics?, history: SevenDayHealthMetrics?, userGoals: UserGoals, completion: @escaping (String?) -> Void) {
+        var context = "USER CONDITION: \(condition)\n\n"
+
+        if let m = metrics {
+            context += "CURRENT VITALS:\n"
+            context += "- Heart Rate: \(m.heartRate.map { "\(Int($0)) BPM" } ?? "N/A")\n"
+            context += "- Resting HR: \(m.restingHeartRate.map { "\(Int($0)) BPM" } ?? "N/A")\n"
+            context += "- HRV: \(m.heartRateVariability.map { "\(Int($0)) ms" } ?? "N/A")\n"
+            context += "- Oxygen: \(m.oxygenSaturation.map { "\(Int($0 * 100))%" } ?? "N/A")\n"
+            context += "- BMI: \(m.bmi.map { String(format: "%.1f", $0) } ?? "N/A")\n\n"
+        }
+
+        if let h = history {
+            context += "7-DAY AVERAGES:\n"
+            context += "- Avg Heart Rate: \(h.avgHeartRate.map { "\(Int($0)) BPM" } ?? "N/A")\n"
+            context += "- Avg Steps: \(h.avgSteps.map { "\($0)" } ?? "N/A")\n"
+            context += "- Avg Sleep: \(h.avgSleepDuration.map { String(format: "%.1f hours", $0) } ?? "N/A")\n\n"
+        }
+
+        let medications = userGoals.medicalInfo.medications
+        if !medications.isEmpty {
+            context += "MEDICATIONS:\n"
+            for med in medications {
+                context += "- \(med.name) (\(med.dosage), \(med.frequency))\n"
+            }
+            context += "\n"
+        }
+        
+        let logs = userGoals.getLogsForCondition(condition)
+        if !logs.symptoms.isEmpty {
+            context += "RECENT SYMPTOMS (Last \(userGoals.historicalAverageDays) Days):\n"
+            for log in logs.symptoms.suffix(10) {
+                context += "- \(log.timestamp.formatted(date: .abbreviated, time: .omitted)): \(log.symptomName) (Severity: \(log.severity)/10)\n"
+            }
+            context += "\n"
+        }
+        
+        if !logs.adherence.isEmpty {
+            context += "ADHERENCE LOGS:\n"
+            for log in logs.adherence.suffix(10) {
+                context += "- \(log.actionName): \(log.isFollowed ? "Followed" : "Not followed")\n"
+            }
+            context += "\n"
+        }
+        
+        let weather = WeatherManager.shared.getCurrentWeather()
+        context += "CURRENT WEATHER/METEOROLOGY METRICS:\n"
+        context += "- Temperature: \(String(format: "%.1f", weather.temperature))°C\n"
+        context += "- Relative Humidity: \(Int(weather.humidity))%\n"
+        context += "- Air Quality Index (AQI): \(weather.airQualityIndex)\n"
+        context += "- Pollen level: \(weather.pollenLevel)\n"
+        context += "- Weather condition: \(weather.condition)\n\n"
+
+        let prompt = """
+        You are a chronic condition management expert. Analyze the following data for a user with \(condition).
+
+        Compare their current vitals, symptoms, and adherence to identify trends. Determine if their management of this condition appears to be Improving, Stable, or Worsening.
+
+        \(context)
+
+        STRUCTURE YOUR RESPONSE EXACTLY LIKE THIS:
+        STATUS: [Improving / Stable / Worsening]
+
+        [Detailed insight explaining WHY the status was chosen. Correlate symptoms with specific vitals if patterns exist. Mention specific medications if relevant. Provide ONE specific, actionable lifestyle tip for managing this condition.]
+
+        Keep the tone professional, supportive, and data-driven.
+        Max 150 words.
+        """
+
+        let request = createChatRequest(prompt: prompt, maxTokens: 400)        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                print("Condition insights API error: \(error.localizedDescription)")
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            
+            guard let data = data,
+                  let decodedResponse = try? JSONDecoder().decode(OpenAIResponse.self, from: data),
+                  let message = decodedResponse.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            
+            DispatchQueue.main.async { completion(message) }
+        }.resume()
+    }
+    
+    func analyzeSymptomCorrelation(condition: String, userGoals: UserGoals, healthMetrics: HealthMetrics?, completion: @escaping (String?) -> Void) {
+        generateInsightsForCondition(condition, metrics: healthMetrics, history: nil, userGoals: userGoals, completion: completion)
+    }
+
+    func generateRecommendationFeedbackSummary(userQuery: String, completion: @escaping (String?) -> Void) {
+        let request = createChatRequest(prompt: userQuery, maxTokens: 150)
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                print("Recommendation Feedback Summary API error: \(error.localizedDescription)")
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            
+            guard let data = data,
+                  let decodedResponse = try? JSONDecoder().decode(OpenAIResponse.self, from: data),
+                  let message = decodedResponse.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            
+            DispatchQueue.main.async { completion(message) }
+        }.resume()
     }
     
     func analyzeNutritionImage(_ imageData: Data, completion: @escaping (Result<NutritionData, Error>) -> Void) {
@@ -654,7 +1373,7 @@ class OpenAIAPIManager: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         let requestBody: [String: Any] = [
-            "model": "gpt-4o",
+            "model": "gpt-4o-mini",
             "messages": [
                 [
                     "role": "user",
@@ -778,7 +1497,7 @@ class OpenAIAPIManager: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         let requestBody: [String: Any] = [
-            "model": "gpt-4o",
+            "model": "gpt-4o-mini",
             "messages": [
                 [
                     "role": "user",
@@ -923,7 +1642,7 @@ class OpenAIAPIManager: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         let requestBody: [String: Any] = [
-            "model": "gpt-4o",
+            "model": "gpt-4o-mini",
             "messages": [
                 [
                     "role": "user",
@@ -1094,20 +1813,279 @@ class OpenAIAPIManager: ObservableObject {
         }.resume()
     }
     
+    /// Analyzes a text description of what the user ate or drank, identifying whether it is a MEAL only, a DRINK only, or BOTH, and checking for allergens.
+    func parseNutritionDescription(_ text: String, allergies: [String] = [], completion: @escaping (Result<MealOrDrinkResult, Error>) -> Void) {
+        let allergyString = allergies.isEmpty ? "None" : allergies.joined(separator: ", ")
+        let prompt = """
+        Analyze the following text description of what the user ate or drank:
+        Text: "\(text)"
+        
+        USER RECORDED ALLERGIES: \(allergyString)
+        
+        Detect what the user is logging:
+        1. MEAL ONLY — user describes food (no drink described or ignore minor drinks) → respond with type "meal" and full nutrition.
+        2. DRINK ONLY — user describes a drink only (e.g. "I drank a glass of water") → respond with type "drink" with label, volume, water/empty flags, and nutrition.
+        3. BOTH — user describes both food AND a drink → respond with type "both" and include both "meal" and "drink" data.
+        
+        Reply with ONLY one JSON object, no other text.
+        
+        For MEAL ONLY:
+        {"type": "meal", "calories": <number>, "protein": <number>, "carbohydrates": <number>, "fat": <number>, "fiber": <number>, "sugar": <number>, "sodium": <number>, "foodItems": [{"name": "...", "quantity": "...", "calories": <number>}, ...], "allergyAlert": <allergyAlertJSON>}
+        
+        For DRINK ONLY:
+        {"type": "drink", "label": "e.g. Water, Orange Juice, Coke", "isWater": <boolean>, "isEmpty": <boolean>, "volumeML": <integer>, "calories": <number>, "protein": <number>, "carbohydrates": <number>, "fat": <number>, "fiber": <number>, "sugar": <number>, "sodium": <number>, "allergyAlert": <allergyAlertJSON>}
+        
+        For BOTH (meal and drink described together):
+        {"type": "both", "meal": {"calories": <number>, "protein": <number>, "carbohydrates": <number>, "fat": <number>, "fiber": <number>, "sugar": <number>, "sodium": <number>, "foodItems": [{"name": "...", "quantity": "...", "calories": <number>}, ...]}, "drink": {"label": "...", "isWater": <boolean>, "isEmpty": <boolean>, "volumeML": <integer>, "calories": <number>, "protein": <number>, "carbohydrates": <number>, "fat": <number>, "fiber": <number>, "sugar": <number>, "sodium": <number>}, "allergyAlert": <allergyAlertJSON>}
+        
+        where <allergyAlertJSON> is:
+        {"triggered": <boolean>, "detectedAllergen": "<string or null>", "warningMessage": "<string or null>"}
+        
+        Rules: 
+        - List all food items described.
+        - For drinks, estimate volume based on typical container sizes (e.g. a glass is typically 250-300 ml, a can is 350 ml, a bottle is 500 ml).
+        - "isWater" should be true if it's plain water.
+        - "isEmpty" should be false.
+        - If the drink is NOT water, provide its nutritional information (calories, protein, carbs, fat, fiber, sugar, sodium).
+        - If the drink IS water, nutritional values should be 0.
+        - If USER RECORDED ALLERGIES is not "None", evaluate if any food item or drink ingredients contain or are made of the allergies. If a potential allergen is detected (e.g. user logs "peanut butter sandwich" and allergy is "peanuts", or user logs "glass of milk" and allergy is "lactose"), set "triggered" to true in "allergyAlert", specify "detectedAllergen", and provide a clear warning message. Otherwise set "triggered" to false, and other fields to null.
+        """
+        
+        let request = createChatRequest(prompt: prompt, responseFormat: "json_object")
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            guard let data = data else {
+                DispatchQueue.main.async { completion(.failure(NSError(domain: "No data", code: -1, userInfo: nil))) }
+                return
+            }
+            do {
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                guard let choices = json?["choices"] as? [[String: Any]],
+                      let firstChoice = choices.first,
+                      let message = firstChoice["message"] as? [String: Any] else {
+                    throw NSError(domain: "Invalid response", code: -1, userInfo: nil)
+                }
+                
+                let content: String
+                if let contentString = message["content"] as? String {
+                    content = contentString
+                } else if let contentParts = message["content"] as? [[String: Any]],
+                          let textPart = contentParts.first(where: { $0["type"] as? String == "text" }),
+                          let text = textPart["text"] as? String {
+                    content = text
+                } else {
+                    throw NSError(domain: "Invalid response", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing or invalid message content"])
+                }
+                
+                guard let parsed = Self.parseMealOrDrinkJSON(from: content),
+                      let type = parsed["type"] as? String else {
+                    throw NSError(domain: "Parse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not determine meal or drink from response"])
+                }
+                
+                var allergyAlert: AllergyAlert? = nil
+                if let allergyObj = parsed["allergyAlert"] as? [String: Any],
+                   let triggered = allergyObj["triggered"] as? Bool, triggered {
+                    let detected = allergyObj["detectedAllergen"] as? String
+                    let warning = allergyObj["warningMessage"] as? String
+                    allergyAlert = AllergyAlert(triggered: triggered, detectedAllergen: detected, warningMessage: warning)
+                }
+                
+                if type == "drink" {
+                    let volume = Self.double(from: parsed["volumeML"])
+                    guard volume > 0 else {
+                        throw NSError(domain: "Parse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing volumeML for drink"])
+                    }
+                    var drinkData = CupVolumeData(volumeML: min(5000, max(10, volume)))
+                    drinkData.label = parsed["label"] as? String
+                    drinkData.isWater = parsed["isWater"] as? Bool
+                    drinkData.isEmpty = parsed["isEmpty"] as? Bool
+                    drinkData.calories = Self.double(from: parsed["calories"])
+                    drinkData.protein = Self.double(from: parsed["protein"])
+                    drinkData.carbohydrates = Self.double(from: parsed["carbohydrates"])
+                    drinkData.fat = Self.double(from: parsed["fat"])
+                    drinkData.fiber = Self.double(from: parsed["fiber"])
+                    drinkData.sugar = Self.double(from: parsed["sugar"])
+                    drinkData.sodium = Self.double(from: parsed["sodium"])
+                    drinkData.allergyAlert = allergyAlert
+                    
+                    DispatchQueue.main.async { completion(.success(.drink(drinkData))) }
+                    return
+                }
+                
+                if type == "both" {
+                    guard let mealObj = parsed["meal"] as? [String: Any],
+                          let drinkObj = parsed["drink"] as? [String: Any] else {
+                        throw NSError(domain: "Parse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing meal or drink in 'both' response"])
+                    }
+                    
+                    // Parse meal part
+                    let mealCalories = Self.double(from: mealObj["calories"])
+                    let mealProtein = Self.double(from: mealObj["protein"])
+                    let mealCarbs = Self.double(from: mealObj["carbohydrates"])
+                    let mealFat = Self.double(from: mealObj["fat"])
+                    let mealFiber = Self.double(from: mealObj["fiber"])
+                    let mealSugar = Self.double(from: mealObj["sugar"])
+                    let mealSodium = Self.double(from: mealObj["sodium"])
+                    var mealFoodItems: [FoodItem] = []
+                    if let items = mealObj["foodItems"] as? [[String: Any]] {
+                        mealFoodItems = items.compactMap { item in
+                            guard let name = item["name"] as? String,
+                                  let quantity = item["quantity"] as? String else { return nil }
+                            let itemCalories = Self.double(from: item["calories"])
+                            return FoodItem(name: name, quantity: quantity, calories: itemCalories, nutrients: [:])
+                        }
+                    }
+                    var nutritionData = NutritionData(
+                        mealPhoto: nil,
+                        calories: mealCalories,
+                        protein: mealProtein,
+                        carbohydrates: mealCarbs,
+                        fat: mealFat,
+                        fiber: mealFiber,
+                        sugar: mealSugar,
+                        sodium: mealSodium,
+                        timestamp: Date(),
+                        foodItems: mealFoodItems
+                    )
+                    nutritionData.allergyAlert = allergyAlert
+                    
+                    // Parse drink part
+                    let drinkVolume = Self.double(from: drinkObj["volumeML"])
+                    guard drinkVolume > 0 else {
+                        throw NSError(domain: "Parse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing volumeML in 'both' drink"])
+                    }
+                    var drinkData = CupVolumeData(volumeML: min(5000, max(10, drinkVolume)))
+                    drinkData.label = drinkObj["label"] as? String
+                    drinkData.isWater = drinkObj["isWater"] as? Bool
+                    drinkData.isEmpty = drinkObj["isEmpty"] as? Bool
+                    drinkData.calories = Self.double(from: drinkObj["calories"])
+                    drinkData.protein = Self.double(from: drinkObj["protein"])
+                    drinkData.carbohydrates = Self.double(from: drinkObj["carbohydrates"])
+                    drinkData.fat = Self.double(from: drinkObj["fat"])
+                    drinkData.fiber = Self.double(from: drinkObj["fiber"])
+                    drinkData.sugar = Self.double(from: drinkObj["sugar"])
+                    drinkData.sodium = Self.double(from: drinkObj["sodium"])
+                    drinkData.allergyAlert = allergyAlert
+                    
+                    DispatchQueue.main.async { completion(.success(.both(meal: nutritionData, drink: drinkData))) }
+                    return
+                }
+                
+                if type == "meal" {
+                    let calories = Self.double(from: parsed["calories"])
+                    let protein = Self.double(from: parsed["protein"])
+                    let carbohydrates = Self.double(from: parsed["carbohydrates"])
+                    let fat = Self.double(from: parsed["fat"])
+                    let fiber = Self.double(from: parsed["fiber"])
+                    let sugar = Self.double(from: parsed["sugar"])
+                    let sodium = Self.double(from: parsed["sodium"])
+                    var foodItems: [FoodItem] = []
+                    if let items = parsed["foodItems"] as? [[String: Any]] {
+                        foodItems = items.compactMap { item in
+                            guard let name = item["name"] as? String,
+                                  let quantity = item["quantity"] as? String else { return nil }
+                            let itemCalories = Self.double(from: item["calories"])
+                            return FoodItem(name: name, quantity: quantity, calories: itemCalories, nutrients: [:])
+                        }
+                    }
+                    var nutritionData = NutritionData(
+                        mealPhoto: nil,
+                        calories: calories,
+                        protein: protein,
+                        carbohydrates: carbohydrates,
+                        fat: fat,
+                        fiber: fiber,
+                        sugar: sugar,
+                        sodium: sodium,
+                        timestamp: Date(),
+                        foodItems: foodItems
+                    )
+                    nutritionData.allergyAlert = allergyAlert
+                    DispatchQueue.main.async { completion(.success(.meal(nutritionData))) }
+                    return
+                }
+                
+                throw NSError(domain: "Parse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unknown type: \(type)"])
+            } catch {
+                DispatchQueue.main.async { completion(.failure(error)) }
+            }
+        }.resume()
+    }
+    
+    // MARK: - Date/Time Context Helper
+    /// Builds a concise date/time string injected into every AI prompt so the model
+    /// can give temporally-aware advice (e.g. wind-down tips in the evening).
+    private var dateTimeContext: String {
+        let now = Date()
+        let df = DateFormatter()
+        df.dateFormat = "EEEE, MMMM d, yyyy"
+        let datePart = df.string(from: now)
+        let hour = Calendar.current.component(.hour, from: now)
+        let timeOfDay: String
+        switch hour {
+        case 5..<12:  timeOfDay = "morning"
+        case 12..<17: timeOfDay = "afternoon"
+        case 17..<21: timeOfDay = "evening"
+        default:      timeOfDay = "night"
+        }
+        return "\(datePart) (\(timeOfDay))"
+    }
+
     private func buildPrompt(healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals, workouts: [WorkoutData], sleepData: [SleepSample]) -> String {
+        let weather = WeatherManager.shared.getCurrentWeather()
         var prompt = """
-        You are a personal wellness AI assistant. Based on the following health data and user goals, provide personalized recommendations.
+        You are a personal wellness AI assistant.
+        COACHING STYLE DIRECTIVE: \(userGoals.coachPersona.promptDirective)
+        Based on the following health data, user goals, and current meteorological metrics, provide personalized recommendations.
+        
+        CURRENT DATE & TIME: \(dateTimeContext)
+        CURRENT METEOROLOGY METRICS:
+        - Temperature: \(String(format: "%.1f", weather.temperature))°C
+        - Relative Humidity: \(Int(weather.humidity))%
+        - Air Quality Index (AQI): \(weather.airQualityIndex)
+        - Pollen level: \(weather.pollenLevel)
+        - Weather condition: \(weather.condition)
+        
+        (Note: If the user has allergies, asthma, or other conditions sensitive to humidity, pollen, or temperature shifts, incorporate these meteorological metrics into your advice.)
         
         USER GOALS:
         \(userGoals.getEnabledGoals().map { $0.rawValue }.joined(separator: ", "))
-        
+
         """
-        
-        // Add 7-day metrics if available
+
+        // Add medical information if available
+        if !userGoals.medicalInfo.allergies.isEmpty || !userGoals.medicalInfo.conditions.isEmpty || !userGoals.medicalInfo.medications.isEmpty {
+            prompt += """
+
+            USER MEDICAL PROFILE:
+            """
+
+            if !userGoals.medicalInfo.conditions.isEmpty {
+                prompt += "\n- Conditions: \(userGoals.medicalInfo.conditions.joined(separator: ", "))"
+            }
+
+            if !userGoals.medicalInfo.medications.isEmpty {
+                let meds = userGoals.medicalInfo.medications.map { "\($0.name) (\($0.dosage))" }.joined(separator: ", ")
+                prompt += "\n- Medications: \(meds)"
+            }
+
+            if !userGoals.medicalInfo.allergies.isEmpty {
+                prompt += "\n- Allergies: \(userGoals.medicalInfo.allergies.joined(separator: ", "))"
+            }
+
+            prompt += "\n"
+        }
+
+        // Add historical metrics if available
         if let sevenDayData = sevenDayMetrics {
+            let rangeDays = userGoals.historicalAverageDays
             prompt += """
             
-            7-DAY HEALTH SUMMARY (Last Week Average):
+            \(rangeDays)-DAY HEALTH SUMMARY (Historical Average):
             - Average Heart Rate: \(String(format: "%.1f", sevenDayData.avgHeartRate ?? 0)) BPM
             - Average Resting Heart Rate: \(String(format: "%.1f", sevenDayData.avgRestingHeartRate ?? 0)) BPM
             - Average Heart Rate Variability: \(String(format: "%.1f", sevenDayData.avgHeartRateVariability ?? 0)) ms
@@ -1121,7 +2099,7 @@ class OpenAIAPIManager: ObservableObject {
             - Height: \(String(format: "%.1f", sevenDayData.height ?? 0)) m
             - BMI: \(String(format: "%.1f", sevenDayData.bmi ?? 0))
             
-            DAILY BREAKDOWN (Last 7 Days):
+            DAILY BREAKDOWN (Last \(rangeDays) Days):
             Each line is for one calendar day. [date] is YYYY-MM-DD. Only the line marked (Today) is today.
             """
             
@@ -1129,7 +2107,7 @@ class OpenAIAPIManager: ObservableObject {
             dateFormatter.dateFormat = "EEEE, MMM d"
             let calendar = Calendar.current
             
-            for (_, daily) in sevenDayData.dailyMetrics.enumerated().reversed() {
+            for (_, daily) in sevenDayData.dailyMetrics.prefix(rangeDays).enumerated().reversed() {
                 let dayLabel = dateFormatter.string(from: daily.date)
                 let todayLabel = calendar.isDateInToday(daily.date) ? " (Today)" : (calendar.isDateInYesterday(daily.date) ? " (Yesterday)" : " (past)")
                 let isoDate = Self.isoDateString(for: daily.date)
@@ -1180,17 +2158,21 @@ class OpenAIAPIManager: ObservableObject {
             """
         }
         
+        let rangeDays = userGoals.historicalAverageDays
+        let cutoffDate = Calendar.current.date(byAdding: .day, value: -rangeDays, to: Date()) ?? Date()
+        let filteredWorkouts = workouts.filter { $0.startDate >= cutoffDate }
+        
         prompt += """
         
-        RECENT WORKOUTS (Last 7 Days):
+        RECENT WORKOUTS (Last \(rangeDays) Days):
         """
         
-        if workouts.isEmpty {
+        if filteredWorkouts.isEmpty {
             prompt += """
             - No recent workouts recorded
             """
         } else {
-            for (index, workout) in workouts.prefix(7).enumerated() {
+            for (index, workout) in filteredWorkouts.prefix(rangeDays).enumerated() {
                 let dateFormatter = DateFormatter()
                 dateFormatter.dateStyle = .medium
                 let workoutDate = dateFormatter.string(from: workout.startDate)
@@ -1409,6 +2391,16 @@ class OpenAIAPIManager: ObservableObject {
         return prompt
     }
     
+    private func formatValence(_ valence: Double) -> String {
+        switch valence {
+        case ..<(-0.6): return "Very Unpleasant"
+        case ..<(-0.2): return "Unpleasant"
+        case ..<0.2: return "Neutral"
+        case ..<0.6: return "Pleasant"
+        default: return "Very Pleasant"
+        }
+    }
+    
     private func stressLevelDescription(_ level: Int) -> String {
         switch level {
         case 1: return "Very Low"
@@ -1420,22 +2412,24 @@ class OpenAIAPIManager: ObservableObject {
         }
     }
     
-    private func createChatRequest(prompt: String, maxTokens: Int = 1000) -> URLRequest {
+    private func createChatRequest(prompt: String, maxTokens: Int = 1000, responseFormat: String? = nil) -> URLRequest {
         var request = URLRequest(url: URL(string: baseURL)!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
+
+        let format = responseFormat != nil ? ResponseFormat(type: responseFormat!) : nil
+
         let requestBody = ChatRequest(
-            model: "gpt-4o",
+            model: "gpt-4o-mini",
             messages: [
-                ChatMessage(role: "system", content: "You are a professional wellness coach and health advisor."),
+                ChatMessage(role: "system", content: "You are a professional wellness coach and health advisor. All your responses MUST be in \(userLanguage)."),
                 ChatMessage(role: "user", content: prompt)
             ],
             maxTokens: maxTokens,
-            temperature: 0.7
-        )
-        
+            temperature: 0.7,
+            responseFormat: format
+        )        
         request.httpBody = try? JSONEncoder().encode(requestBody)
         return request
     }
@@ -1444,7 +2438,11 @@ class OpenAIAPIManager: ObservableObject {
     
     private func buildExercisePrompt(healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals, workouts: [WorkoutData]) -> String {
         var prompt = """
-        You are a personal fitness AI assistant. Based on the following EXERCISE-SPECIFIC data and user goals, provide personalized exercise recommendations.
+        You are a personal fitness AI assistant.
+        COACHING STYLE DIRECTIVE: \(userGoals.coachPersona.promptDirective)
+        Based on the following EXERCISE-SPECIFIC data and user goals, provide personalized exercise recommendations.
+        
+        CURRENT DATE & TIME: \(dateTimeContext)
         
         USER GOALS:
         \(userGoals.getEnabledGoals().map { $0.rawValue }.joined(separator: ", "))
@@ -1478,42 +2476,46 @@ class OpenAIAPIManager: ObservableObject {
             """
         }
         
-        // SECTION 1: Weekly Averages (Exercise metrics: steps, active energy, heart rate, workout aggregates)
+        // SECTION 1: Averages (Exercise metrics: steps, active energy, heart rate, workout aggregates)
         if let sevenDayData = sevenDayMetrics {
-            let totalWorkoutTimeMinutes = workouts.reduce(0.0) { $0 + $1.duration / 60.0 }
-            let totalDistanceM = workouts.compactMap { $0.totalDistance }.reduce(0, +)
+            let rangeDays = userGoals.historicalAverageDays
+            let cutoffDate = Calendar.current.date(byAdding: .day, value: -rangeDays, to: Date()) ?? Date()
+            let filteredWorkouts = workouts.filter { $0.startDate >= cutoffDate }
+            
+            let totalWorkoutTimeMinutes = filteredWorkouts.reduce(0.0) { $0 + $1.duration / 60.0 }
+            let totalDistanceM = filteredWorkouts.compactMap { $0.totalDistance }.reduce(0, +)
             let totalDistanceKm = totalDistanceM / 1000.0
-            let avgHRFromWorkouts = workouts.compactMap { $0.averageHeartRate }
+            let avgHRFromWorkouts = filteredWorkouts.compactMap { $0.averageHeartRate }
             let avgWorkoutHR = avgHRFromWorkouts.isEmpty ? nil : avgHRFromWorkouts.reduce(0, +) / Double(avgHRFromWorkouts.count)
-            let maxHRFromWorkouts = workouts.compactMap { $0.maxHeartRate }.max()
+            let maxHRFromWorkouts = filteredWorkouts.compactMap { $0.maxHeartRate }.max()
 
             prompt += """
             
-            === WEEKLY AVERAGES (Last 7 Days) ===
+            === AVERAGES (Last \(rangeDays) Days) ===
             Steps & Activity:
             - Average Daily Steps: \(sevenDayData.avgSteps ?? 0) steps/day
             - Average Active Energy Burned: \(String(format: "%.1f", sevenDayData.avgActiveEnergyBurned ?? 0)) kcal/day
             
-            Workout Summary (Last 7 Days) — use these for heart rate in exercise context (NOT the general daily average from Health):
-            - Number of Workouts: \(workouts.count)
+            Workout Summary (Last \(rangeDays) Days) — use these for heart rate in exercise context (NOT the general daily average from Health):
+            - Number of Workouts: \(filteredWorkouts.count)
             - Total Workout Time: \(String(format: "%.1f", totalWorkoutTimeMinutes)) minutes
             - Total Distance Covered: \(String(format: "%.2f", totalDistanceKm)) km
             - Average Heart Rate (during workouts only): \(avgWorkoutHR.map { String(format: "%.1f", $0) + " BPM" } ?? "N/A")
             - Max Heart Rate (during workouts): \(maxHRFromWorkouts.map { String(format: "%.1f", $0) + " BPM" } ?? "N/A")
             """
             
-            // SECTION 2: Daily Breakdown (Last 7 Days) — each line includes [YYYY-MM-DD] so past days are never confused with today
+            // SECTION 2: Daily Breakdown (Last \(rangeDays) Days) — each line includes [YYYY-MM-DD] so past days are never confused with today
             prompt += """
             
             
-            === DAILY BREAKDOWN (Last 7 Days) ===
+            === DAILY BREAKDOWN (Last \(rangeDays) Days) ===
             Each line is for one calendar day. [date] is YYYY-MM-DD. Only the line marked (Today) is today.
             """
             
             let dateFormatter = DateFormatter()
             dateFormatter.dateFormat = "EEEE, MMM d"
             
-            for (_, daily) in sevenDayData.dailyMetrics.enumerated().reversed() {
+            for (_, daily) in sevenDayData.dailyMetrics.prefix(rangeDays).enumerated().reversed() {
                 let dayLabel = dateFormatter.string(from: daily.date)
                 let calendar = Calendar.current
                 let todayLabel = calendar.isDateInToday(daily.date) ? " (Today)" : (calendar.isDateInYesterday(daily.date) ? " (Yesterday)" : " (past)")
@@ -1554,22 +2556,26 @@ class OpenAIAPIManager: ObservableObject {
             """
         }
         
+        let rangeDays = userGoals.historicalAverageDays
+        let cutoffDate = Calendar.current.date(byAdding: .day, value: -rangeDays, to: Date()) ?? Date()
+        let filteredWorkouts = workouts.filter { $0.startDate >= cutoffDate }
+        
         // Recent workouts with steps, active energy, workouts, total workout time, distance, avg HR, max HR, pace
         prompt += """
         
         
-        === RECENT WORKOUTS (Last 7 Days) ===
+        === RECENT WORKOUTS (Last \(rangeDays) Days) ===
         """
         
-        if workouts.isEmpty {
+        if filteredWorkouts.isEmpty {
             prompt += """
-            - No workouts recorded in the last 7 days
+            - No workouts recorded in the last \(rangeDays) days
             """
         } else {
             let dateFormatter = DateFormatter()
             dateFormatter.dateFormat = "EEEE, MMM d"
             
-            for (index, workout) in workouts.prefix(7).enumerated() {
+            for (index, workout) in filteredWorkouts.prefix(rangeDays).enumerated() {
                 let workoutDate = dateFormatter.string(from: workout.startDate)
                 _ = workout.duration / 3600.0
                 let paceMinPerKm: String? = workout.totalDistance.flatMap { dist -> String? in
@@ -1621,8 +2627,21 @@ class OpenAIAPIManager: ObservableObject {
     }
     
     private func buildHealthPrompt(healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals) -> String {
+        let weather = WeatherManager.shared.getCurrentWeather()
         var prompt = """
-        You are a personal health AI assistant. Based on the following HEALTH-SPECIFIC data (body measurements, vital signs, respiratory metrics) and user goals, provide personalized health recommendations.
+        You are a personal health AI assistant.
+        COACHING STYLE DIRECTIVE: \(userGoals.coachPersona.promptDirective)
+        Based on the following HEALTH-SPECIFIC data (body measurements, vital signs, respiratory metrics), user goals, and current meteorological metrics, provide personalized health recommendations.
+        
+        CURRENT DATE & TIME: \(dateTimeContext)
+        CURRENT METEOROLOGY METRICS:
+        - Temperature: \(String(format: "%.1f", weather.temperature))°C
+        - Relative Humidity: \(Int(weather.humidity))%
+        - Air Quality Index (AQI): \(weather.airQualityIndex)
+        - Pollen level: \(weather.pollenLevel)
+        - Weather condition: \(weather.condition)
+        
+        (Note: If the user has allergies, asthma, or other conditions sensitive to humidity, pollen, or temperature shifts, incorporate these meteorological metrics into your advice.)
         
         USER GOALS:
         \(userGoals.getEnabledGoals().map { $0.rawValue }.joined(separator: ", "))
@@ -1650,17 +2669,26 @@ class OpenAIAPIManager: ObservableObject {
                 """
             }
             
+            if !userGoals.medicalInfo.medications.isEmpty {
+                let medicationsText = userGoals.medicalInfo.medications.map { "\($0.name) (\($0.dosage), \($0.frequency))" }.joined(separator: ", ")
+                prompt += """
+                
+                Medications: \(medicationsText)
+                """
+            }
+            
             prompt += """
             
-            IMPORTANT: Consider these allergies and conditions when making health recommendations. Ensure all recommendations are safe and appropriate given the user's medical history.
+            IMPORTANT: Consider these allergies, conditions, and medications when making health recommendations. Ensure all recommendations are safe and appropriate given the user's medical history.
             """
         }
         
-        // SECTION 1: Weekly Averages (Health metrics: heart rate, RHR, HRV, O2 sat, respiratory rate, audio exposure, wrist temp, BMI)
+        // SECTION 1: Historical Averages (Health metrics: heart rate, RHR, HRV, O2 sat, respiratory rate, audio exposure, wrist temp, BMI)
         if let sevenDayData = sevenDayMetrics {
+            let rangeDays = userGoals.historicalAverageDays
             prompt += """
             
-            === WEEKLY AVERAGES (Last 7 Days) ===
+            === HISTORICAL AVERAGES (Last \(rangeDays) Days) ===
             - Heart Rate: \(String(format: "%.1f", sevenDayData.avgHeartRate ?? 0)) BPM
             - Resting Heart Rate: \(String(format: "%.1f", sevenDayData.avgRestingHeartRate ?? 0)) BPM
             - Heart Rate Variability (HRV): \(String(format: "%.1f", sevenDayData.avgHeartRateVariability ?? 0)) ms
@@ -1671,18 +2699,18 @@ class OpenAIAPIManager: ObservableObject {
             - BMI: \(String(format: "%.1f", sevenDayData.bmi ?? 0)) (Body Mass: \(String(format: "%.1f", sevenDayData.bodyMass ?? 0)) kg, Height: \(String(format: "%.2f", sevenDayData.height ?? 0)) m)
             """
             
-            // SECTION 2: Daily Breakdown (Last 7 Days) — each line includes [YYYY-MM-DD]
+            // SECTION 2: Daily Breakdown (Last \(rangeDays) Days) — each line includes [YYYY-MM-DD]
             prompt += """
             
             
-            === DAILY BREAKDOWN (Last 7 Days) ===
+            === DAILY BREAKDOWN (Last \(rangeDays) Days) ===
             Each line is for one calendar day. [date] is YYYY-MM-DD. Only the line marked (Today) is today.
             """
             
             let dateFormatter = DateFormatter()
             dateFormatter.dateFormat = "EEEE, MMM d"
             
-            for (_, daily) in sevenDayData.dailyMetrics.enumerated().reversed() {
+            for (_, daily) in sevenDayData.dailyMetrics.prefix(rangeDays).enumerated().reversed() {
                 let dayLabel = dateFormatter.string(from: daily.date)
                 let calendar = Calendar.current
                 let todayLabel = calendar.isDateInToday(daily.date) ? " (Today)" : (calendar.isDateInYesterday(daily.date) ? " (Yesterday)" : " (past)")
@@ -1738,14 +2766,47 @@ class OpenAIAPIManager: ObservableObject {
         return prompt + buildRecommendationInstructions(category: "Health")
     }
     
-    private func buildWellbeingPrompt(healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals, sleepData: [SleepSample], stressDataPoints: [StressDataPoint]) -> String {
+    private func buildWellbeingPrompt(healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals, sleepData: [SleepSample], stressDataPoints: [StressDataPoint], stateOfMindSamples: [HKStateOfMind] = []) -> String {
         var prompt = """
-        You are a personal wellbeing AI assistant. Based on the following WELLBEING-SPECIFIC data (sleep, mental health, stress) and user goals, provide personalized wellbeing recommendations.
+        You are a personal wellbeing AI assistant.
+        COACHING STYLE DIRECTIVE: \(userGoals.coachPersona.promptDirective)
+        Based on the following WELLBEING-SPECIFIC data (sleep, mental health, stress, mood logs) and user goals, provide personalized wellbeing recommendations.
+        
+        CRITICAL: Analyze the relationship between the user's native mood logs and their physical vitals (Heart Rate, HRV, Sleep). Look for patterns like "HRV drops on days with Work-related stress" or "Mood improves following high Deep Sleep nights".
+        
+        CURRENT DATE & TIME: \(dateTimeContext)
         
         USER GOALS:
         \(userGoals.getEnabledGoals().map { $0.rawValue }.joined(separator: ", "))
         
         """
+        
+        // Add native mood logs (State of Mind)
+        if !stateOfMindSamples.isEmpty {
+            let rangeDays = userGoals.historicalAverageDays
+            let cutoffDate = Calendar.current.date(byAdding: .day, value: -rangeDays, to: Date()) ?? Date()
+            let filteredStateOfMind = stateOfMindSamples.filter { $0.startDate >= cutoffDate }
+            
+            if !filteredStateOfMind.isEmpty {
+                prompt += """
+                
+                === NATIVE MOOD LOGS (Last \(rangeDays) Days) ===
+                (Logged via Apple Health 'State of Mind')
+                """
+                
+                for sample in filteredStateOfMind {
+                    let valenceStr = formatValence(sample.valence)
+                    let kind = sample.kind == .momentaryEmotion ? "Momentary" : "Daily"
+                    let labels = sample.labels.isEmpty ? "None" : sample.labels.map { "\($0)" }.joined(separator: ", ")
+                    let associations = sample.associations.isEmpty ? "None" : sample.associations.map { "\($0)" }.joined(separator: ", ")
+                    
+                    prompt += """
+                    
+                    - \(sample.startDate.formatted()): \(valenceStr) (\(kind)). Labels: \(labels). Associations: \(associations)
+                    """
+                }
+            }
+        }
         
         // Add medical information if available
         if !userGoals.medicalInfo.allergies.isEmpty || !userGoals.medicalInfo.conditions.isEmpty {
@@ -1774,9 +2835,10 @@ class OpenAIAPIManager: ObservableObject {
             """
         }
         
-        // SECTION 1: Weekly Averages (Wellbeing: stress, sleep duration/quality/consistency, sleep stages, time in daylight)
+        // SECTION 1: Historical Averages (Wellbeing: stress, sleep duration/quality/consistency, sleep stages, time in daylight)
         if let sevenDayData = sevenDayMetrics {
-            let sleepDurations = sevenDayData.dailyMetrics.compactMap { $0.sleepDuration }.filter { $0 > 0 }
+            let rangeDays = userGoals.historicalAverageDays
+            let sleepDurations = sevenDayData.dailyMetrics.prefix(rangeDays).compactMap { $0.sleepDuration }.filter { $0 > 0 }
             let sleepConsistency: String
             if sleepDurations.count >= 2 {
                 let minH = sleepDurations.min() ?? 0
@@ -1789,30 +2851,32 @@ class OpenAIAPIManager: ObservableObject {
             
             prompt += """
             
-            === WEEKLY AVERAGES (Last 7 Days) ===
+            === HISTORICAL AVERAGES (Last \(rangeDays) Days) ===
             Sleep:
             - Average Sleep Duration: \(String(format: "%.1f", sevenDayData.avgSleepDuration ?? 0)) hours/night (Healthy: 7-9 hours)
             - Sleep Consistency: \(sleepConsistency)
             
-            Stress Indicator (HRV):
+            Stress & Mood:
             - Average Heart Rate Variability (HRV): \(String(format: "%.1f", sevenDayData.avgHeartRateVariability ?? 0)) ms (Higher = better recovery)
+            - Average Stress Level: \(healthMetrics?.calculatedStressLevel.map { String(format: "%.1f", $0) } ?? "N/A")/100
+            - Current Mood: \(healthMetrics?.moodScore.map { String(format: "%.1f", $0) } ?? "N/A")/10
             
             Time in Daylight:
             - Average Time in Daylight: \(String(format: "%.1f", sevenDayData.avgTimeInDaylight ?? 0)) minutes/day (Healthy: 30+ min daily)
             """
             
-            // SECTION 2: Daily Breakdown (Last 7 Days) — each line includes [YYYY-MM-DD]
+            // SECTION 2: Daily Breakdown (Last \(rangeDays) Days) — each line includes [YYYY-MM-DD]
             prompt += """
             
             
-            === DAILY BREAKDOWN (Last 7 Days) ===
+            === DAILY BREAKDOWN (Last \(rangeDays) Days) ===
             Each line is for one calendar day. [date] is YYYY-MM-DD. Only the line marked (Today) is today.
             """
             
             let dateFormatter = DateFormatter()
             dateFormatter.dateFormat = "EEEE, MMM d"
             
-            for (_, daily) in sevenDayData.dailyMetrics.enumerated().reversed() {
+            for (_, daily) in sevenDayData.dailyMetrics.prefix(rangeDays).enumerated().reversed() {
                 let dayLabel = dateFormatter.string(from: daily.date)
                 let calendar = Calendar.current
                 let todayLabel = calendar.isDateInToday(daily.date) ? " (Today)" : (calendar.isDateInYesterday(daily.date) ? " (Yesterday)" : " (past)")
@@ -1825,6 +2889,7 @@ class OpenAIAPIManager: ObservableObject {
                   - Sleep Duration: \(String(format: "%.1f", daily.sleepDuration ?? 0)) hours
                   - HRV: \(String(format: "%.1f", daily.heartRateVariability ?? 0)) ms
                   - Time in Daylight: \(String(format: "%.1f", daily.timeInDaylight ?? 0)) minutes
+                  - Mood Score: \(daily.moodScore.map { String(format: "%.1f", $0) } ?? "N/A")/10
                 """
             }
             
@@ -1924,7 +2989,66 @@ class OpenAIAPIManager: ObservableObject {
             }
         }
         
-        return prompt + buildRecommendationInstructions(category: "Wellbeing")
+        let moodCorrelationInstructions = """
+        
+        
+        === AI RECOMMENDATION INSTRUCTIONS: MOOD & VITALS CORRELATION ===
+        In your recommendations, you MUST prioritize analyzing the relationship between the user's logged Moods (valence, labels, associations) and their physical data (HRV, Sleep, Stress).
+        
+        Example correlations to look for:
+        - "Your HRV is 15% higher on days you log 'Calm' emotions related to 'Hobbies'."
+        - "Logging 'Anxious' emotions in the evening correlates with 45 minutes less Deep Sleep."
+        - "Your resting heart rate is consistently lower following days with 'Very Pleasant' mood reflections."
+        
+        Provide specific, data-driven wellbeing recommendations that help the user improve both their mental and physical resilience.
+        """
+        
+        return prompt + moodCorrelationInstructions + buildRecommendationInstructions(category: "Wellbeing")
+    }
+    
+    // MARK: - Contextual Notifications
+    
+    func generateContextualNotificationMessage(
+        type: String, // "Trend" or "Gap"
+        metricName: String,
+        details: String, // e.g., "HRV up 10%" or "Missing 3 days"
+        userGoal: String,
+        completion: @escaping (String?) -> Void
+    ) {
+        let prompt = """
+        You are Nessa, a medical AI assistant. Generate a SHORT (max 120 characters) and IMPACTFUL notification message for a user.
+        
+        TYPE: \(type)
+        METRIC: \(metricName)
+        DETAILS: \(details)
+        USER GOAL: \(userGoal)
+        
+        If TYPE is "Trend":
+        - Celebrate the progress.
+        - Link it to their goal or heart/overall health.
+        - Example: "Your heart is getting stronger! HRV is up 12% this week, moving you closer to Stress Reduction."
+        
+        If TYPE is "Gap":
+        - Be encouraging but clear about why the data is needed.
+        - Link it to their condition or goal.
+        - Example: "Help Nessa stay accurate! Log your Blood Pressure today to better monitor your Hypertension."
+        
+        Tone: Professional, encouraging, and medical-grade but accessible.
+        NO emojis. Max 120 characters.
+        """
+        
+        let request = createChatRequest(prompt: prompt, maxTokens: 60)
+        
+        URLSession.shared.dataTaskPublisher(for: request)
+            .map { $0.data }
+            .decode(type: OpenAIResponse.self, decoder: JSONDecoder())
+            .map { $0.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .replaceError(with: nil)
+            .receive(on: DispatchQueue.main)
+            .sink { message in
+                completion(message)
+            }
+            .store(in: &cancellables)
     }
     
     private func stressLevelDescription(for score: Double) -> String {
@@ -1944,7 +3068,11 @@ class OpenAIAPIManager: ObservableObject {
     
     private func buildNutritionPrompt(healthMetrics: HealthMetrics?, sevenDayMetrics: SevenDayHealthMetrics?, userGoals: UserGoals, weeklyMeals: [String: [CodableMealEntry]] = [:], weeklyHydration: [String: [HydrationEntry]] = [:]) -> String {
         var prompt = """
-        You are a personal nutrition AI assistant. Based on the following NUTRITION-SPECIFIC data (hydration, calorie intake, protein, carbs, fat, fiber, sugar, sodium, body metrics, energy expenditure) and user goals, provide personalized nutrition recommendations.
+        You are a personal nutrition AI assistant.
+        COACHING STYLE DIRECTIVE: \(userGoals.coachPersona.promptDirective)
+        Based on the following NUTRITION-SPECIFIC data (hydration, calorie intake, protein, carbs, fat, fiber, sugar, sodium, body metrics, energy expenditure) and user goals, provide personalized nutrition recommendations.
+        
+        CURRENT DATE & TIME: \(dateTimeContext)
         
         USER GOALS:
         \(userGoals.getEnabledGoals().map { $0.rawValue }.joined(separator: ", "))
@@ -1982,12 +3110,13 @@ class OpenAIAPIManager: ObservableObject {
         let calendar = Calendar.current
         let today = Date()
         let todayKey = Self.nutritionDateKey(for: today)
-        let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: today) ?? today
-        let cutoffKey = Self.nutritionDateKey(for: sevenDaysAgo)
+        let rangeDays = userGoals.historicalAverageDays
+        let rangeDaysAgo = calendar.date(byAdding: .day, value: -rangeDays, to: today) ?? today
+        let cutoffKey = Self.nutritionDateKey(for: rangeDaysAgo)
         
-        // Only consider keys within last 7 days (same as app's cleanOldMeals / getMealsForLastWeek)
-        let last7DaysMealKeys = weeklyMeals.keys.filter { $0 >= cutoffKey }
-        let last7DaysHydrationKeys = weeklyHydration.keys.filter { $0 >= cutoffKey }
+        // Only consider keys within last N days (same as app's cleanOldMeals)
+        let lastDaysMealKeys = weeklyMeals.keys.filter { $0 >= cutoffKey }
+        let lastDaysHydrationKeys = weeklyHydration.keys.filter { $0 >= cutoffKey }
         
         // Today's values only (same data the user sees for "today" in the app)
         let todayMeals = weeklyMeals[todayKey] ?? []
@@ -2001,12 +3130,12 @@ class OpenAIAPIManager: ObservableObject {
         let todaySugar = todayMeals.reduce(0.0) { $0 + $1.sugar }
         let todaySodium = todayMeals.reduce(0.0) { $0 + $1.sodium }
         
-        // Averages over last 7 days only (all days in range, not just days with data)
+        // Averages over last N days only (all days in range, not just days with data)
         var totalHydrationML = 0
         var totalCalories = 0.0, totalProtein = 0.0, totalCarbs = 0.0, totalFat = 0.0, totalFiber = 0.0, totalSugar = 0.0, totalSodium = 0.0
         var dayCountWithMeals = 0
         var dayCountWithHydration = 0
-        for key in last7DaysMealKeys {
+        for key in lastDaysMealKeys {
             guard let meals = weeklyMeals[key], !meals.isEmpty else { continue }
             dayCountWithMeals += 1
             for m in meals {
@@ -2019,7 +3148,7 @@ class OpenAIAPIManager: ObservableObject {
                 totalSodium += m.sodium
             }
         }
-        for key in last7DaysHydrationKeys {
+        for key in lastDaysHydrationKeys {
             guard let entries = weeklyHydration[key] else { continue }
             let dayML = entries.reduce(0) { $0 + $1.amountML }
             if dayML > 0 { dayCountWithHydration += 1 }
@@ -2049,14 +3178,14 @@ class OpenAIAPIManager: ObservableObject {
         prompt += """
         
         
-        === NUTRITION METRICS (Last 7 Days) — AVERAGES OVER ALL 7 DAYS ===
+        === NUTRITION METRICS (Last \(rangeDays) Days) — AVERAGES OVER ALL \(rangeDays) DAYS ===
         (These are averages. Values in "DAILY BREAKDOWN" below are single-day values — never call them "average".)
         
-        Hydration (last 7 days):
+        Hydration (last \(rangeDays) days):
         - Total: \(totalHydrationML) ml
         - Daily average: \(String(format: "%.0f", avgHydration)) ml/day (Goal: \(Int(hydrationGoalML)) ml/day)
         
-        Intake from logged meals (last 7 days averages):
+        Intake from logged meals (last \(rangeDays) days averages):
         - Calorie intake (avg/day): \(String(format: "%.0f", avgCalories)) kcal
         - Protein (avg/day): \(String(format: "%.1f", avgProtein)) g
         - Carbohydrates (avg/day): \(String(format: "%.1f", avgCarbs)) g
@@ -2072,11 +3201,11 @@ class OpenAIAPIManager: ObservableObject {
         prompt += """
         
         
-        === DAILY BREAKDOWN (Last 7 Days) - Nutrition — EACH LINE IS ONE DAY'S TOTAL, NOT AN AVERAGE ===
+        === DAILY BREAKDOWN (Last \(rangeDays) Days) - Nutrition — EACH LINE IS ONE DAY'S TOTAL, NOT AN AVERAGE ===
         """
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "EEEE, MMM d"
-        for dayOffset in 0..<7 {
+        for dayOffset in 0..<rangeDays {
             guard let date = calendar.date(byAdding: .day, value: -dayOffset, to: today) else { continue }
             let key = Self.nutritionDateKey(for: date)
             let dayLabel = dateFormatter.string(from: date)
@@ -2100,7 +3229,7 @@ class OpenAIAPIManager: ObservableObject {
             prompt += """
             
             
-            === BODY & ENERGY EXPENDITURE (Last 7 Days) ===
+            === BODY & ENERGY EXPENDITURE (Last \(rangeDays) Days) ===
             - Body Mass: \(String(format: "%.1f", sevenDayData.bodyMass ?? 0)) kg
             - Height: \(String(format: "%.2f", sevenDayData.height ?? 0)) m
             - BMI: \(String(format: "%.1f", sevenDayData.bmi ?? 0))
@@ -2109,11 +3238,11 @@ class OpenAIAPIManager: ObservableObject {
             - TDEE (avg): \(String(format: "%.1f", (sevenDayData.avgActiveEnergyBurned ?? 0) + (sevenDayData.avgBasalEnergyBurned ?? 0))) kcal/day
             """
             
-            // SECTION 2: Daily Breakdown (Last 7 Days) - energy only; each line is ONE day, NOT an average
+            // SECTION 2: Daily Breakdown (Last \(rangeDays) Days) - energy only; each line is ONE day, NOT an average
             prompt += """
             
             
-            === DAILY BREAKDOWN (Last 7 Days) - Energy expenditure — EACH LINE IS A SINGLE DAY'S VALUE, NOT AN AVERAGE ===
+            === DAILY BREAKDOWN (Last \(rangeDays) Days) - Energy expenditure — EACH LINE IS A SINGLE DAY'S VALUE, NOT AN AVERAGE ===
             Do not call any value below "average". Only the "BODY & ENERGY EXPENDITURE" and "NUTRITION METRICS" sections above contain averages.
             Each line: one calendar day. [date] is YYYY-MM-DD. Only the line marked (Today) is today.
             """
@@ -2121,7 +3250,7 @@ class OpenAIAPIManager: ObservableObject {
             let dateFormatter = DateFormatter()
             dateFormatter.dateFormat = "EEEE, MMM d"
             
-            for (_, daily) in sevenDayData.dailyMetrics.enumerated().reversed() {
+            for (_, daily) in sevenDayData.dailyMetrics.prefix(rangeDays).enumerated().reversed() {
                 let dayLabel = dateFormatter.string(from: daily.date)
                 let calendar = Calendar.current
                 let todayLabel = calendar.isDateInToday(daily.date) ? " (Today)" : (calendar.isDateInYesterday(daily.date) ? " (Yesterday)" : " (past)")
@@ -2215,10 +3344,10 @@ class OpenAIAPIManager: ObservableObject {
         DATE RULE — DO NOT MIX UP TODAY WITH PAST DAYS:
         - NEVER describe a value from a past day as "today". Only values in the section explicitly labeled "TODAY'S CURRENT VALUES" or "TODAY'S ENERGY" or "TODAY'S ACTIVITY METRICS" or "TODAY'S HEALTH METRICS" are for today.
         - When citing a specific day, use the exact date label from the data (e.g. "Yesterday: 6.5 hours", "Wed Feb 24: 5.5 hours", "2025-02-24: 8,200 steps"). Do not say "today" when the value is from the daily breakdown for a different date.
-        - Do NOT call a single day's value an "average" or "weekly average". Only use "average" or "Avg" when the value comes from the "WEEKLY AVERAGES" or "7-DAY" summary section. A value from one day must be labeled with that specific day (e.g. "Wednesday Feb 24: 5.5 hours"), never as "user's average".
+        - Do NOT call a single day's value an "average" or "weekly average". Only use "average" or "Avg" when the value comes from the averages or historical summary section. A value from one day must be labeled with that specific day (e.g. "Wednesday Feb 24: 5.5 hours"), never as "user's average".
         \(category == "Nutrition" ? """
         
-        NUTRITION-SPECIFIC: The ONLY averages for nutrition are in the "NUTRITION METRICS (Last 7 Days)" and "BODY & ENERGY EXPENDITURE (Last 7 Days)" sections. Every line in "DAILY BREAKDOWN" is a SINGLE day's value. Never describe a daily breakdown value as "average" or "user's average"; always cite the date (e.g. "Wed Feb 24: 1,800 kcal").
+        NUTRITION-SPECIFIC: The ONLY averages for nutrition are in the nutrition metrics and body & energy expenditure averages sections. Every line in "DAILY BREAKDOWN" is a SINGLE day's value. Never describe a daily breakdown value as "average" or "user's average"; always cite the date (e.g. "Wed Feb 24: 1,800 kcal").
         """ : "")
         
         DIRECTION OF HEALTHY RANGE — DO NOT INVERT "GOOD" VS "BAD":
@@ -2368,7 +3497,7 @@ class OpenAIAPIManager: ObservableObject {
         return false
     }
     
-    private func parseRecommendations(from response: OpenAIResponse) {
+    func parseRecommendations(from response: OpenAIResponse) {
         guard let content = response.choices.first?.message.content else {
             error = "No recommendations received"
             return
@@ -2438,15 +3567,20 @@ struct ChatRequest: Codable {
     let messages: [ChatMessage]
     let maxTokens: Int
     let temperature: Double
-    
+    let responseFormat: ResponseFormat?
+
     enum CodingKeys: String, CodingKey {
         case model, messages, temperature
         case maxTokens = "max_tokens"
+        case responseFormat = "response_format"
     }
 }
 
-struct ChatMessage: Codable {
-    let role: String
+struct ResponseFormat: Codable {
+    let type: String
+}
+
+struct ChatMessage: Codable {    let role: String
     let content: String
 }
 
@@ -2488,6 +3622,35 @@ struct ParsedPriorityMetric: Codable {
     let healthyRange: String
     let reason: String
     let relatedCondition: String
+    let isManual: Bool?
+    let requiresImage: Bool?
+    let imageAnalysisPrompt: String?
+    let weatherContext: Bool?
+    let manualWorkaround: String?
+    let isSideEffectMonitoring: Bool?
+    let equipment: ParsedEquipmentSuggestion?
+}
+
+struct ParsedEquipmentSuggestion: Codable {
+    let name: String
+    let type: String
+    let reason: String
+    let storeLinks: [ParsedStoreLink]
+}
+
+struct ParsedStoreLink: Codable {
+    let storeName: String
+    let url: String
+}
+
+struct ParsedAnalysisResult: Codable {
+    let priorityMetrics: [ParsedPriorityMetric]
+    let recommendedTabs: [String]
+}
+
+struct AnalysisResult {
+    let priorityMetrics: [PriorityMetric]
+    let recommendedTabs: [String]
 }
 
 // MARK: - HKWorkoutActivityType Extension

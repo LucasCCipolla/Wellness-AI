@@ -4,16 +4,12 @@ import StoreKit
 struct PaywallView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     var onClose: (() -> Void)?
-    
+
     @State private var didAppear = false
     @State private var purchaseError: String?
     @State private var showAlert = false
-    
-    var monthlyProduct: Product? {
-        guard let monthlyID = subscriptionManager.productIdentifiers.first else { return nil }
-        return subscriptionManager.products.first(where: { $0.id == monthlyID })
-    }
-    
+    @State private var selectedPlan: String = "annual"
+
     var body: some View {
         ZStack {
             // Hero gradient background
@@ -48,29 +44,103 @@ struct PaywallView: View {
                     }
                     .padding(.top, 24)
 
-                    // Card with features and price
+                    // Plan selector cards (Annual + Monthly side by side)
+                    HStack(alignment: .top, spacing: 12) {
+                        // Annual plan card
+                        Button(action: { selectedPlan = "annual" }) {
+                            VStack(spacing: 8) {
+                                // Best Value badge
+                                Text("Best Value")
+                                    .font(.caption2)
+                                    .fontWeight(.bold)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(Color.purple)
+                                    .foregroundStyle(.white)
+                                    .clipShape(Capsule())
+
+                                Text("Annual")
+                                    .font(.headline)
+                                    .fontWeight(.bold)
+
+                                Text(subscriptionManager.annualProduct?.displayPrice ?? "---")
+                                    .font(.system(size: 28, weight: .heavy))
+
+                                Text("/ year")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+
+                                Text("Save vs monthly")
+                                    .font(.caption)
+                                    .foregroundStyle(.purple)
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 18)
+                            .padding(.horizontal, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(selectedPlan == "annual"
+                                          ? Color.purple.opacity(0.15)
+                                          : Color(UIColor.secondarySystemBackground))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                            .stroke(selectedPlan == "annual" ? Color.purple : Color.clear, lineWidth: 2)
+                                    )
+                            )
+                            .foregroundStyle(Color.primary)
+                        }
+                        .buttonStyle(.plain)
+
+                        // Monthly plan card
+                        Button(action: { selectedPlan = "monthly" }) {
+                            VStack(spacing: 8) {
+                                // Spacer to align with badge height
+                                Color.clear.frame(height: 22)
+
+                                Text("Monthly")
+                                    .font(.headline)
+                                    .fontWeight(.bold)
+
+                                Text(subscriptionManager.monthlyProduct?.displayPrice ?? "---")
+                                    .font(.system(size: 28, weight: .heavy))
+
+                                Text("/ month")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 18)
+                            .padding(.horizontal, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(selectedPlan == "monthly"
+                                          ? Color.blue.opacity(0.12)
+                                          : Color(UIColor.secondarySystemBackground))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                            .stroke(selectedPlan == "monthly" ? Color.blue : Color.clear, lineWidth: 2)
+                                    )
+                            )
+                            .foregroundStyle(Color.primary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal)
+
+                    // Main card: features + subscribe
                     VStack(alignment: .leading, spacing: 16) {
                         // Features
-                        VStack(alignment: .leading, spacing: 10) {
-                            Label { Text("Personalized AI recommendations across Health, Nutrition, and more") } icon: { Image(systemName: "brain.head.profile").foregroundColor(.purple) }
-                            Label { Text("Priority insights using your 7‑day trends and today's data") } icon: { Image(systemName: "chart.line.uptrend.xyaxis").foregroundColor(.blue) }
-                            Label { Text("Access to all premium features and updates") } icon: { Image(systemName: "star.fill").foregroundColor(.yellow) }
-                            Label { Text("Restore purchases anytime on your devices") } icon: { Image(systemName: "arrow.clockwise.circle.fill").foregroundColor(.green) }
+                        VStack(alignment: .leading, spacing: 12) {
+                            Label { Text("AI-driven wellness predictions & 5-day biometric trend analysis") } icon: { Image(systemName: "brain.head.profile").foregroundColor(.purple) }
+                            Label { Text("Environmental Vitals (real-time outdoor weather, pollen & AQI warnings)") } icon: { Image(systemName: "wind").foregroundColor(.orange) }
+                            Label { Text("Medical conditions, medication tracker & allergen safety matching") } icon: { Image(systemName: "heart.text.square").foregroundColor(.red) }
+                            Label { Text("Physician-ready health report exports (PDF report sharing)") } icon: { Image(systemName: "doc.text.fill").foregroundColor(.blue) }
+                            Label { Text("Custom AI coach personas (Clinician, Fitness, Mindful Guide)") } icon: { Image(systemName: "sparkles").foregroundColor(.yellow) }
                         }
                         .font(.subheadline)
 
                         Divider()
-
-                        // Price
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(monthlyProduct?.displayPrice ?? "---")
-                                .font(.system(size: 40, weight: .bold))
-                            if monthlyProduct != nil {
-                                Text("/ month")
-                                    .font(.headline)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
 
                         // Subscribe button
                         Button(action: {
@@ -78,7 +148,11 @@ struct PaywallView: View {
                                 subscriptionManager.isLoading = true
                                 defer { subscriptionManager.isLoading = false }
                                 do {
-                                    try await subscriptionManager.purchaseMonthly()
+                                    if selectedPlan == "annual" {
+                                        try await subscriptionManager.purchaseAnnual()
+                                    } else {
+                                        try await subscriptionManager.purchaseMonthly()
+                                    }
                                 } catch {
                                     purchaseError = error.localizedDescription
                                     showAlert = true
@@ -87,7 +161,7 @@ struct PaywallView: View {
                         }) {
                             HStack(spacing: 8) {
                                 if subscriptionManager.isLoading { ProgressView().tint(.white) }
-                                Text(subscriptionManager.isLoading ? "Processing…" : "Subscribe Now")
+                                Text(subscriptionManager.isLoading ? "Processing…" : "Start 7-Day Free Trial")
                                     .fontWeight(.semibold)
                             }
                             .frame(maxWidth: .infinity)
@@ -114,24 +188,29 @@ struct PaywallView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
-                            
-                            if let monthlyProduct = monthlyProduct, let subscription = monthlyProduct.subscription {
-                                Text("Billing: \(monthlyProduct.displayPrice) per \(format(period: subscription.subscriptionPeriod).lowercased())")
+
+                            if selectedPlan == "annual", let product = subscriptionManager.annualProduct, let subscription = product.subscription {
+                                Text("Billing: 7 Days Free, then \(product.displayPrice) per \(format(period: subscription.subscriptionPeriod).lowercased())")
+                                    .font(.caption2)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(.secondary)
+                            } else if selectedPlan == "monthly", let product = subscriptionManager.monthlyProduct, let subscription = product.subscription {
+                                Text("Billing: 7 Days Free, then \(product.displayPrice) per \(format(period: subscription.subscriptionPeriod).lowercased())")
                                     .font(.caption2)
                                     .fontWeight(.bold)
                                     .foregroundStyle(.secondary)
                             }
-                            
+
                             HStack(spacing: 20) {
                                 Button("Privacy Policy") {
                                     if let url = URL(string: "https://lucasccipolla.github.io/Wellness-AI/") {
                                         UIApplication.shared.open(url)
                                     }
                                 }
-                                
+
                                 Text("•")
                                     .foregroundColor(.secondary)
-                                
+
                                 Button("Terms of Use (EULA)") {
                                     if let url = URL(string: "https://lucasccipolla.github.io/Wellness-AI/terms") {
                                         UIApplication.shared.open(url)
@@ -171,7 +250,7 @@ struct PaywallView: View {
             }
         }
     }
-    
+
     private func format(period: Product.SubscriptionPeriod) -> String {
         switch period.unit {
         case .day:

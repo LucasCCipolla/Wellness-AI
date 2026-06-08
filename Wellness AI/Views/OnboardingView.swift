@@ -2,6 +2,7 @@ import SwiftUI
 
 struct OnboardingView: View {
     @EnvironmentObject var userGoals: UserGoals
+    @EnvironmentObject var healthKitManager: HealthKitManager
     @State private var currentPage = 0
     
     // User inputs
@@ -14,8 +15,12 @@ struct OnboardingView: View {
     // Medical info inputs
     @State private var newAllergy: String = ""
     @State private var newCondition: String = ""
+    @State private var newMedicationName: String = ""
     @State private var isAnalyzingConditions = false
+    @State private var showVoiceImport = false
     @EnvironmentObject var openAIManager: OpenAIAPIManager
+    
+
     
     // Calculated values
     private var calculatedDailyCalories: Int {
@@ -69,24 +74,38 @@ struct OnboardingView: View {
         ),
         OnboardingPage(
             title: "Smartwatch",
-            subtitle: "Do you have an Smartwatch?",
-            description: "This helps us personalize your experience. If you have an Smartwatch, we can provide comprehensive health tracking. Otherwise, we'll focus on nutrition features.",
+            subtitle: "Do you have a Smartwatch?",
+            description: "This helps us personalize your experience. If you have a Smartwatch, we can provide comprehensive health tracking. Otherwise, we'll focus on nutrition features.",
             imageName: "applewatch",
             color: .cyan
         ),
         OnboardingPage(
-            title: "Choose Your Goals",
-            subtitle: "What would you like to focus on?",
-            description: "Select one or more wellness goals that matter most to you. We'll personalize your experience based on these priorities.",
-            imageName: "target",
-            color: .green
+            title: "Health Data Access",
+            subtitle: "Connect your health data",
+            description: "By connecting with Apple Health, Nessa can analyze your activity, heart rate, and sleep to provide deeply personalized wellness insights.",
+            imageName: "heart.fill",
+            color: .red
+        ),
+        OnboardingPage(
+            title: "Stay on Track",
+            subtitle: "Reminders & Motivation",
+            description: "Enable notifications to receive timely meal logging reminders and daily AI-generated motivation to help you reach your goals.",
+            imageName: "bell.fill",
+            color: .orange
         ),
         OnboardingPage(
             title: "Medical Information",
-            subtitle: "Help us personalize your health insights",
-            description: "Share any medical conditions or allergies to get AI-powered health recommendations tailored to your needs.",
+            subtitle: "Let's personalize your care.",
+            description: "Select conditions you are managing, or enter your own. Share medications/allergies for safer recommendations.",
             imageName: "cross.fill",
-            color: .red
+            color: .blue
+        ),
+        OnboardingPage(
+            title: "Choose Your Goals",
+            subtitle: "What are your main goals?",
+            description: "Select all that apply to help our AI assist you better.",
+            imageName: "target",
+            color: .green
         ),
         OnboardingPage(
             title: "Set Your Targets",
@@ -131,16 +150,19 @@ struct OnboardingView: View {
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 10)
+                .padding(.bottom, 10)
                 
-                if currentPage < 3 {
+                if currentPage < 4 {
                     pageContent
-                } else if currentPage == 3 {
-                    medicalInfoContent
                 } else if currentPage == 4 {
-                    targetSettingContent
+                    medicalInfoContent
                 } else if currentPage == 5 {
-                    tutorialDashboardContent
+                    goalSelectionView
                 } else if currentPage == 6 {
+                    targetSettingContent
+                } else if currentPage == 7 {
+                    tutorialDashboardContent
+                } else if currentPage == 8 {
                     tutorialLogMealContent
                 } else {
                     tutorialRecommendationsContent
@@ -149,6 +171,34 @@ struct OnboardingView: View {
                 Spacer()
                 
                 bottomNavigation
+            }
+            .sheet(isPresented: $showVoiceImport) {
+                MedicalVoiceImportView(onComplete: {
+                    if !userGoals.medicalInfo.conditions.isEmpty || !userGoals.medicalInfo.medications.isEmpty || !userGoals.medicalInfo.allergies.isEmpty {
+                        isAnalyzingConditions = true
+                        openAIManager.analyzeMedicalConditions(
+                            userGoals.medicalInfo.conditions,
+                            medications: userGoals.medicalInfo.medications,
+                            allergies: userGoals.medicalInfo.allergies,
+                            healthHistory: healthKitManager.sevenDayMetrics
+                        ) { result in
+                            DispatchQueue.main.async {
+                                isAnalyzingConditions = false
+                                if case .success(let analysis) = result {
+                                    userGoals.setPriorityMetrics(analysis.priorityMetrics)
+                                    userGoals.setRecommendedTabs(analysis.recommendedTabs)
+                                }
+                             }
+                        }
+                    }
+                })
+                .environmentObject(userGoals)
+                .environmentObject(openAIManager)
+            }
+            .onChange(of: userGoals.hasAIConsent) { oldValue, newValue in
+                if newValue {
+                    showConsentError = false
+                }
             }
             .navigationBarHidden(true)
             .background(
@@ -192,8 +242,6 @@ struct OnboardingView: View {
                 
                 if currentPage == 1 {
                     appleWatchSelectionView
-                } else if currentPage == 2 {
-                    goalSelectionView
                 }
                 
                 Spacer()
@@ -213,7 +261,7 @@ struct OnboardingView: View {
             
             VStack(spacing: 16) {
                 AppleWatchOptionCard(
-                    title: "Yes, I have an Smartwatch",
+                    title: "Yes, I have a Smartwatch",
                     description: "Access comprehensive health tracking with Exercise, Health, Wellbeing, and Nutrition tabs",
                     icon: "applewatch",
                     isSelected: userGoals.hasAppleWatch
@@ -234,30 +282,99 @@ struct OnboardingView: View {
         }
     }
     
+    private var adaptedGoals: [WellnessGoal] {
+        var list: [WellnessGoal] = []
+        
+        // Check conditions, medications, and allergies
+        let conditionsLower = userGoals.medicalInfo.conditions.map { $0.lowercased() }
+        let hasDiabetes = conditionsLower.contains { $0.contains("diabetes") || $0.contains("glucose") || $0.contains("sugar") }
+        let hasHypertension = conditionsLower.contains { $0.contains("hypertension") || $0.contains("blood pressure") || $0.contains("bp") }
+        let hasFatigue = conditionsLower.contains { $0.contains("fatigue") || $0.contains("tired") || $0.contains("energy") || $0.contains("sleep") }
+        let hasMeds = !userGoals.medicalInfo.medications.isEmpty
+        let hasAllergies = !userGoals.medicalInfo.allergies.isEmpty
+        
+        // Add recommended medical-specific goals first if they apply
+        if hasDiabetes {
+            list.append(.stabilizeGlucose)
+        }
+        if hasHypertension {
+            list.append(.manageBloodPressure)
+        }
+        if hasMeds {
+            list.append(.reduceMedication)
+        }
+        if hasAllergies {
+            list.append(.manageAllergies)
+            list.append(.betterNutrition)
+        }
+        
+        // Always include general goals, but filter out duplicates if already added
+        let generalGoals: [WellnessGoal] = [
+            .weightLoss,
+            .increasedEnergy,
+            .betterNutrition,
+            .improvedFitness,
+            .betterSleep,
+            .stressReduction,
+            .muscleGain
+        ]
+        
+        for goal in generalGoals {
+            if !list.contains(goal) {
+                // If fatigue is detected, put increasedEnergy first
+                if hasFatigue && goal == .increasedEnergy {
+                    list.insert(.increasedEnergy, at: list.firstIndex(where: { $0 == .weightLoss }) ?? 0)
+                } else {
+                    list.append(goal)
+                }
+            }
+        }
+        
+        // Ensure list has unique items
+        var uniqueList: [WellnessGoal] = []
+        for item in list {
+            if !uniqueList.contains(item) {
+                uniqueList.append(item)
+            }
+        }
+        
+        return uniqueList
+    }
+    
     private var goalSelectionView: some View {
-        VStack(spacing: 16) {
-            Text("Select your wellness goals:")
-                .font(.headline)
-                .padding(.top)
-            
-            LazyVGrid(columns: [
-                GridItem(.flexible()),
-                GridItem(.flexible())
-            ], spacing: 12) {
-                ForEach(WellnessGoal.allCases, id: \.self) { goal in
-                    GoalCard(
-                        goal: goal,
-                        isSelected: userGoals.selectedGoals.contains(goal)
-                    ) {
-                        if userGoals.selectedGoals.contains(goal) {
-                            userGoals.removeGoal(goal)
-                        } else {
-                            userGoals.addGoal(goal)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                // Title & Subtitle from page metadata
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(pages[5].subtitle) // "What are your main goals?"
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                        .foregroundColor(Color(uiColor: .label))
+                    
+                    Text(pages[5].description) // "Select all that apply to help our AI assist you better."
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+                
+                // List of options (adapted dynamic list)
+                VStack(spacing: 12) {
+                    ForEach(adaptedGoals, id: \.self) { goal in
+                        GoalCheckboxCard(
+                            title: goal.rawValue,
+                            isSelected: userGoals.selectedGoals.contains(goal)
+                        ) {
+                            if userGoals.selectedGoals.contains(goal) {
+                                userGoals.removeGoal(goal)
+                            } else {
+                                userGoals.addGoal(goal)
+                            }
                         }
                     }
                 }
+                .padding(.horizontal, 24)
             }
-            .padding(.horizontal)
         }
     }
     
@@ -266,23 +383,23 @@ struct OnboardingView: View {
             VStack(spacing: 24) {
                 // Header
                 VStack(spacing: 16) {
-                    Image(systemName: pages[3].imageName)
+                    Image(systemName: pages[4].imageName)
                         .font(.system(size: 70))
-                        .foregroundColor(pages[3].color)
+                        .foregroundColor(pages[4].color)
                         .padding(.top, 20)
                     
-                    Text(pages[3].title)
+                    Text(pages[4].title)
                         .font(.largeTitle)
                         .fontWeight(.bold)
                         .multilineTextAlignment(.center)
                     
-                    Text(pages[3].subtitle)
+                    Text(pages[4].subtitle)
                         .font(.title3)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal)
                     
-                    Text(pages[3].description)
+                    Text(pages[4].description)
                         .font(.body)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -290,24 +407,63 @@ struct OnboardingView: View {
                 }
                 .padding(.bottom, 10)
                 
+                // AI Voice Dictation Card
+                Button(action: { showVoiceImport = true }) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "mic.badge.plus")
+                            .font(.title2)
+                            .foregroundColor(.white)
+                            .frame(width: 48, height: 48)
+                            .background(Circle().fill(Color.purple))
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Import with Voice or Text")
+                                .font(.subheadline)
+                                .fontWeight(.bold)
+                                .foregroundColor(.primary)
+                            Text("Use Nessa AI to quickly transcribe and parse your medical conditions & medications.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.leading)
+                        }
+                        
+                        Spacer()
+                        
+                        Image(systemName: "chevron.right")
+                            .font(.footnote)
+                            .foregroundColor(.gray)
+                    }
+                    .padding()
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(12)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.purple.opacity(0.3), lineWidth: 1.5)
+                    )
+                }
+                .padding(.horizontal)
+                
                 // Medical Conditions Section
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Medical Conditions")
                         .font(.headline)
                         .foregroundColor(.primary)
                     
-                    Text("The AI will analyze your conditions to identify which health metrics you should monitor.")
+                    Text("Enter any conditions you are managing below:")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    // Add condition input
+                    // Custom condition input
                     HStack {
-                        TextField("Enter a condition (e.g., Diabetes, Hypertension)", text: $newCondition)
+                        TextField("Add condition...", text: $newCondition)
                             .textFieldStyle(RoundedBorderTextFieldStyle())
                         
                         Button(action: {
-                            if !newCondition.isEmpty {
-                                userGoals.addCondition(newCondition)
+                            let trimmed = newCondition.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !trimmed.isEmpty {
+                                if !userGoals.medicalInfo.conditions.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+                                    userGoals.addCondition(trimmed)
+                                }
                                 newCondition = ""
                             }
                         }) {
@@ -315,16 +471,17 @@ struct OnboardingView: View {
                                 .font(.title2)
                                 .foregroundColor(.blue)
                         }
-                        .disabled(newCondition.isEmpty)
+                        .disabled(newCondition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                     
-                    // Display conditions
+                    // Conditions list
                     if !userGoals.medicalInfo.conditions.isEmpty {
-                        VStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 8) {
                             ForEach(userGoals.medicalInfo.conditions, id: \.self) { condition in
                                 HStack {
                                     Image(systemName: "staroflife.fill")
-                                        .foregroundColor(.red)
+                                        .foregroundColor(.blue)
+                                        .font(.caption)
                                     Text(condition)
                                         .font(.body)
                                     Spacer()
@@ -343,11 +500,89 @@ struct OnboardingView: View {
                                 )
                             }
                         }
-                    } else {
-                        Text("No conditions added. Skip if you don't have any.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .italic()
+                    }
+                }
+                .padding()
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color(uiColor: .secondarySystemBackground))
+                )
+                .padding(.horizontal)
+                
+                // Medications Section
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Medications")
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                    
+                    Text("Linking medications helps the AI monitor treatment efficacy and side effects.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    // Add medication input
+                    VStack(spacing: 12) {
+                        HStack {
+                            TextField("Medication name (e.g., Lisinopril)", text: $newMedicationName)
+                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                            
+                            Button(action: {
+                                if !newMedicationName.isEmpty {
+                                    let medication = Medication(
+                                        name: newMedicationName,
+                                        dosage: "",
+                                        frequency: "As prescribed"
+                                    )
+                                    userGoals.addMedication(medication)
+                                    newMedicationName = ""
+                                }
+                            }) {
+                                HStack {
+                                    Image(systemName: "plus.circle.fill")
+                                    Text("Add")
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color.blue)
+                                .foregroundColor(.white)
+                                .cornerRadius(8)
+                            }
+                            .disabled(newMedicationName.isEmpty)
+                        }
+                    }
+                    
+                    // Display medications
+                    if !userGoals.medicalInfo.medications.isEmpty {
+                        VStack(spacing: 8) {
+                            ForEach(userGoals.medicalInfo.medications) { medication in
+                                HStack {
+                                    Image(systemName: "pills.fill")
+                                        .foregroundColor(.indigo)
+                                    VStack(alignment: .leading) {
+                                        Text(medication.name)
+                                            .font(.body)
+                                            .fontWeight(.medium)
+                                        if !medication.dosage.isEmpty {
+                                            Text(medication.dosage)
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    Button(action: {
+                                        userGoals.removeMedication(medication)
+                                    }) {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundColor(.gray)
+                                    }
+                                }
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 12)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(Color(uiColor: .secondarySystemBackground))
+                                )
+                            }
+                        }
                     }
                 }
                 .padding()
@@ -550,17 +785,17 @@ struct OnboardingView: View {
             VStack(spacing: 24) {
                 // Header
                 VStack(spacing: 16) {
-                    Image(systemName: pages[4].imageName)
+                    Image(systemName: pages[6].imageName)
                         .font(.system(size: 70))
-                        .foregroundColor(pages[4].color)
+                        .foregroundColor(pages[6].color)
                         .padding(.top, 20)
                     
-                    Text(pages[4].title)
+                    Text(pages[6].title)
                         .font(.largeTitle)
                         .fontWeight(.bold)
                         .multilineTextAlignment(.center)
                     
-                    Text("Tell us your weight goals")
+                    Text(pages[6].subtitle)
                         .font(.title3)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -1074,16 +1309,24 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(PrimaryButtonStyle())
             } else if currentPage == 2 {
-                // Goal selection - require at least one goal
-                if !userGoals.selectedGoals.isEmpty {
-                    Button("Continue") {
-                        withAnimation {
-                            currentPage += 1
-                        }
+                // Health Data Access Soft-Ask
+                Button("Allow Health Access") {
+                    healthKitManager.requestHealthKitPermissions()
+                    withAnimation {
+                        currentPage += 1
                     }
-                    .buttonStyle(PrimaryButtonStyle())
                 }
+                .buttonStyle(PrimaryButtonStyle())
             } else if currentPage == 3 {
+                // Notifications Soft-Ask
+                Button("Enable Notifications") {
+                    NotificationManager.shared.requestAuthorization()
+                    withAnimation {
+                        currentPage += 1
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle())
+            } else if currentPage == 4 {
                 // Medical info page - analyze conditions if any
                 if isAnalyzingConditions {
                     ProgressView("Analyzing your conditions...")
@@ -1094,7 +1337,17 @@ struct OnboardingView: View {
                     }
                     .buttonStyle(PrimaryButtonStyle())
                 }
-            } else if currentPage == 4 {
+            } else if currentPage == 5 {
+                // Goal selection - require at least one goal
+                if !userGoals.selectedGoals.isEmpty {
+                    Button("Continue") {
+                        withAnimation {
+                            currentPage += 1
+                        }
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                }
+            } else if currentPage == 6 {
                 // Targets set — continue to app tutorial
                 Button("Continue") {
                     saveTargets()
@@ -1103,15 +1356,15 @@ struct OnboardingView: View {
                     }
                 }
                 .buttonStyle(PrimaryButtonStyle())
-            } else if currentPage >= 5 && currentPage < 7 {
-                // Tutorial screens 1 & 2
+            } else if currentPage >= 7 && currentPage < 9 {
+                // Tutorial screens
                 Button("Continue") {
                     withAnimation {
                         currentPage += 1
                     }
                 }
                 .buttonStyle(PrimaryButtonStyle())
-            } else if currentPage == 7 {
+            } else if currentPage == 9 {
                 // Last tutorial — complete setup
                 Button("Complete Setup") {
                     userGoals.completeOnboarding()
@@ -1140,26 +1393,28 @@ struct OnboardingView: View {
     }
     
     private func analyzeConditionsAndContinue() {
-        if !userGoals.medicalInfo.conditions.isEmpty || !userGoals.medicalInfo.allergies.isEmpty {
-            // Check for AI consent first
-            guard userGoals.hasAIConsent else {
-                withAnimation {
-                    showConsentError = true
-                }
-                return
+        // AI Consent is MANDATORY for all users to proceed
+        guard userGoals.hasAIConsent else {
+            withAnimation {
+                showConsentError = true
             }
-            
+            return
+        }
+        
+        if !userGoals.medicalInfo.conditions.isEmpty || !userGoals.medicalInfo.medications.isEmpty || !userGoals.medicalInfo.allergies.isEmpty {
             isAnalyzingConditions = true
             
             openAIManager.analyzeMedicalConditions(
                 userGoals.medicalInfo.conditions,
+                medications: userGoals.medicalInfo.medications,
                 allergies: userGoals.medicalInfo.allergies
             ) { result in
                 isAnalyzingConditions = false
                 
                 switch result {
-                case .success(let metrics):
-                    userGoals.setPriorityMetrics(metrics)
+                case .success(let analysis):
+                    userGoals.setPriorityMetrics(analysis.priorityMetrics)
+                    userGoals.setRecommendedTabs(analysis.recommendedTabs)
                     withAnimation {
                         currentPage += 1
                     }
@@ -1172,7 +1427,7 @@ struct OnboardingView: View {
                 }
             }
         } else {
-            // No conditions to analyze, just continue
+            // No conditions to analyze, but consent was given, so continue
             withAnimation {
                 currentPage += 1
             }
@@ -1289,6 +1544,53 @@ struct AppleWatchOptionCard: View {
                 RoundedRectangle(cornerRadius: 16)
                     .stroke(Color.cyan, lineWidth: isSelected ? 0 : 2)
             )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+struct GoalCheckboxCard: View {
+    let title: String
+    let isSelected: Bool
+    let onTap: () -> Void
+    
+    var body: some View {
+        Button(action: onTap) {
+            HStack {
+                Text(title)
+                    .font(.headline)
+                    .fontWeight(.medium)
+                    .foregroundColor(Color(uiColor: .label))
+                
+                Spacer()
+                
+                // Checkbox
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isSelected ? Color.blue : Color.gray.opacity(0.3), lineWidth: 1.5)
+                    .frame(width: 24, height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(isSelected ? Color.blue : Color.clear)
+                    )
+                    .overlay(
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                            .opacity(isSelected ? 1.0 : 0.0)
+                    )
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color(uiColor: .secondarySystemGroupedBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(isSelected ? Color.blue : Color.gray.opacity(0.2), lineWidth: isSelected ? 2 : 1)
+            )
+            .shadow(color: Color.black.opacity(0.03), radius: 6, x: 0, y: 3)
         }
         .buttonStyle(PlainButtonStyle())
     }

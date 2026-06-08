@@ -8,15 +8,19 @@ class HealthKitManager: ObservableObject {
     @Published var isAuthorized = false
     @Published var healthMetrics: HealthMetrics?
     @Published var sevenDayMetrics: SevenDayHealthMetrics?
+    @Published var historicalMetrics: [DailyHealthMetrics] = []
+    @Published var isFetchingHistory = false
     @Published var workouts: [WorkoutData] = []
     @Published var sleepData: [SleepSample] = []
     @Published var isLoading = false
     @Published var stressDataPoints: [StressDataPoint] = [] // Stress scores in hourly intervals
     @Published var yesterdayStressData: StressComponentData? // Previous day's stress with components
     @Published var recentSleepReadinessData: SleepReadinessData? // Last ~60 min for "Am I Ready to Sleep?"
+    @Published var stateOfMindSamples: [HKStateOfMind] = []
     
     /// When set (e.g. from UserGoals.currentWeight), used for BMR fallback when Apple Health basal/bodyMass is missing.
     var userProvidedWeightKg: Double?
+    var userGoals: UserGoals?
     
     // Backward compatibility
     var fiveDayMetrics: SevenDayHealthMetrics? { sevenDayMetrics }
@@ -53,13 +57,15 @@ class HealthKitManager: ObservableObject {
             .quantityType(forIdentifier: .bloodPressureDiastolic)!,
             .quantityType(forIdentifier: .appleStandTime)!, // Stand minutes
             .quantityType(forIdentifier: .timeInDaylight)!, // Time in daylight
-            .quantityType(forIdentifier: .appleSleepingWristTemperature)! // Wrist temperature
+            .quantityType(forIdentifier: .appleSleepingWristTemperature)!, // Wrist temperature
+            HKObjectType.stateOfMindType()
         ]
         
         let writeTypes: Set<HKSampleType> = [
             .quantityType(forIdentifier: .bodyMass)!,
             .quantityType(forIdentifier: .activeEnergyBurned)!,
-            .workoutType()
+            .workoutType(),
+            HKObjectType.stateOfMindType()
         ]
         
         healthStore.requestAuthorization(toShare: writeTypes, read: readTypes) { [weak self] success, error in
@@ -75,120 +81,190 @@ class HealthKitManager: ObservableObject {
         }
     }
     
-    func fetchHealthData() {
-        guard isAuthorized else { return }
+    private var lastFetchDate: Date?
+    private let fetchThrottleInterval: TimeInterval = 300 // 5 minutes
+    
+    func fetchHealthData(force: Bool = false) {
+        if let goals = userGoals, goals.useMockSensorData {
+            loadMockHealthData()
+            return
+        }
         
-        isLoading = true
+        if !force, let lastFetch = lastFetchDate, Date().timeIntervalSince(lastFetch) < fetchThrottleInterval {
+            print("HealthKit: Fetch throttled. Last fetch was \(Int(Date().timeIntervalSince(lastFetch)))s ago.")
+            return
+        }
         
+        // Re-check authorization status implicitly by requesting (which returns immediately if already granted)
+        let readTypes: Set<HKObjectType> = [
+            .quantityType(forIdentifier: .heartRate)!,
+            .quantityType(forIdentifier: .restingHeartRate)!,
+            .quantityType(forIdentifier: .heartRateVariabilitySDNN)!,
+            .quantityType(forIdentifier: .bodyMass)!,
+            .quantityType(forIdentifier: .height)!,
+            .quantityType(forIdentifier: .stepCount)!,
+            .quantityType(forIdentifier: .activeEnergyBurned)!,
+            .quantityType(forIdentifier: .basalEnergyBurned)!,
+            .quantityType(forIdentifier: .oxygenSaturation)!,
+            .quantityType(forIdentifier: .respiratoryRate)!,
+            .quantityType(forIdentifier: .environmentalAudioExposure)!,
+            .categoryType(forIdentifier: .sleepAnalysis)!,
+            .workoutType(),
+            .quantityType(forIdentifier: .bloodPressureSystolic)!,
+            .quantityType(forIdentifier: .bloodPressureDiastolic)!,
+            .quantityType(forIdentifier: .appleStandTime)!,
+            .quantityType(forIdentifier: .timeInDaylight)!,
+            .quantityType(forIdentifier: .appleSleepingWristTemperature)!,
+            HKObjectType.stateOfMindType()
+        ]
+        
+        healthStore.requestAuthorization(toShare: [], read: readTypes) { [weak self] success, error in
+            DispatchQueue.main.async {
+                self?.isAuthorized = success
+                guard success else { return }
+                
+                self?.lastFetchDate = Date()
+                self?.isLoading = true
+                self?.performFetch()
+            }
+        }
+    }
+    
+    private func performFetch() {
         let dispatchGroup = DispatchGroup()
         var allHealthData: [HKObjectType: [HKSample]] = [:]
+        let dataQueue = DispatchQueue(label: "com.wellnessai.performFetchQueue")
         
         // Fetch heart rate (average of the day)
         dispatchGroup.enter()
         fetchAverageSample(for: .heartRate, unit: HKUnit.count().unitDivided(by: HKUnit.minute())) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .heartRate)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .heartRate)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch resting heart rate (average of the day)
         dispatchGroup.enter()
         fetchAverageSample(for: .restingHeartRate, unit: HKUnit.count().unitDivided(by: HKUnit.minute())) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .restingHeartRate)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .restingHeartRate)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch heart rate variability (average of the day)
         dispatchGroup.enter()
         fetchAverageSample(for: .heartRateVariabilitySDNN, unit: HKUnit.secondUnit(with: .milli)) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .heartRateVariabilitySDNN)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .heartRateVariabilitySDNN)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch oxygen saturation (average of the day)
         dispatchGroup.enter()
         fetchAverageSample(for: .oxygenSaturation, unit: HKUnit.percent()) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .oxygenSaturation)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .oxygenSaturation)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch respiratory rate (average of the day)
         dispatchGroup.enter()
         fetchAverageSample(for: .respiratoryRate, unit: HKUnit.count().unitDivided(by: HKUnit.minute())) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .respiratoryRate)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .respiratoryRate)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch environmental audio exposure (average of the day)
         dispatchGroup.enter()
         fetchAverageSample(for: .environmentalAudioExposure, unit: HKUnit.decibelAWeightedSoundPressureLevel()) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .environmentalAudioExposure)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .environmentalAudioExposure)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch body mass (latest available)
         dispatchGroup.enter()
         fetchLatestSample(for: .bodyMass, unit: HKUnit.gramUnit(with: .kilo)) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .bodyMass)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .bodyMass)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch height (latest available)
         dispatchGroup.enter()
         fetchLatestSample(for: .height, unit: HKUnit.meter()) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .height)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .height)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch step count (sum of the day)
         dispatchGroup.enter()
         fetchSumSample(for: .stepCount, unit: HKUnit.count()) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .stepCount)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .stepCount)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch active energy burned (sum of the day)
         dispatchGroup.enter()
         fetchSumSample(for: .activeEnergyBurned, unit: HKUnit.kilocalorie()) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .activeEnergyBurned)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .activeEnergyBurned)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch basal energy burned (sum of the day)
         dispatchGroup.enter()
         fetchSumSample(for: .basalEnergyBurned, unit: HKUnit.kilocalorie()) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .basalEnergyBurned)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .basalEnergyBurned)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch wrist temperature (latest available)
         dispatchGroup.enter()
         fetchLatestSample(for: .appleSleepingWristTemperature, unit: HKUnit.degreeCelsius()) { sample in
-            if let sample = sample {
-                allHealthData[HKObjectType.quantityType(forIdentifier: .appleSleepingWristTemperature)!] = [sample]
+            dataQueue.async {
+                if let sample = sample {
+                    allHealthData[HKObjectType.quantityType(forIdentifier: .appleSleepingWristTemperature)!] = [sample]
+                }
+                dispatchGroup.leave()
             }
-            dispatchGroup.leave()
         }
         
         // Fetch workouts
@@ -197,7 +273,9 @@ class HealthKitManager: ObservableObject {
             DispatchQueue.main.async {
                 self?.workouts = workoutData
             }
-            dispatchGroup.leave()
+            dataQueue.async {
+                dispatchGroup.leave()
+            }
         }
         
         // Fetch sleep data
@@ -206,7 +284,23 @@ class HealthKitManager: ObservableObject {
             DispatchQueue.main.async {
                 self?.sleepData = sleepSamples
             }
-            dispatchGroup.leave()
+            dataQueue.async {
+                dispatchGroup.leave()
+            }
+        }
+        
+        // Fetch State of Mind data
+        dispatchGroup.enter()
+        let calendar = Calendar.current
+        let now = Date()
+        let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+        fetchStateOfMindSamples(from: sevenDaysAgo, to: now) { [weak self] samples in
+            DispatchQueue.main.async {
+                self?.stateOfMindSamples = samples
+            }
+            dataQueue.async {
+                dispatchGroup.leave()
+            }
         }
         
         dispatchGroup.notify(queue: .main) { [weak self] in
@@ -214,6 +308,15 @@ class HealthKitManager: ObservableObject {
             // Basal: use HealthKit when present and > 0; otherwise BMR from weight (HealthKit or user-provided) / height
             let weightForBMR = raw.bodyMass ?? self?.userProvidedWeightKg
             let basal: Double? = Self.calculateBMRFromWeightAndHeight(weightKg: weightForBMR, heightM: raw.height)
+            
+            // Calculate mood score (average of recent samples, mapped to 1-10)
+            var avgMood: Double?
+            if let samples = self?.stateOfMindSamples, !samples.isEmpty {
+                // val = valence (0.0 to 1.0, where 0.0 is very unpleasant, 1.0 is very pleasant)
+                let sumValence = samples.reduce(0.0) { $0 + $1.valence }
+                avgMood = (sumValence / Double(samples.count)) * 9.0 + 1.0 // Map 0-1 to 1-10
+            }
+
             self?.healthMetrics = HealthMetrics(
                 heartRate: raw.heartRate,
                 restingHeartRate: raw.restingHeartRate,
@@ -231,36 +334,193 @@ class HealthKitManager: ObservableObject {
                 environmentalAudioExposure: raw.environmentalAudioExposure,
                 medications: raw.medications,
                 timeInDaylight: raw.timeInDaylight,
-                wristTemperature: raw.wristTemperature
+                wristTemperature: raw.wristTemperature,
+                moodScore: avgMood
             )
             
             // Also fetch 7-day metrics
             self?.fetch7DayHealthData()
+            
+            // Check for priority metric alerts
+            self?.checkPriorityMetricsAlerts()
         }
     }
     
-    // MARK: - 7-Day (Week) Data Fetching
-    func fetch7DayHealthData() {
+    private func checkPriorityMetricsAlerts() {
+        guard let metrics = healthMetrics else { return }
+        
+        // 1. Check AI Priority Metrics (Personalized)
+        if let userGoals = userGoals {
+            for metric in userGoals.priorityMetrics {
+                let currentValue = getValueForMetric(metric.metricName, from: metrics)
+                
+                if let value = currentValue, isValueOutOfRange(value, rangeString: metric.healthyRange, metricName: metric.metricName) {
+                    NotificationManager.shared.sendHealthAlert(
+                        metricName: metric.metricName,
+                        currentValue: formatValue(value, metricName: metric.metricName),
+                        healthyRange: metric.healthyRange
+                    )
+                }
+            }
+        }
+        
+        // 2. Check Default Healthy Bounds (Safety Net)
+        // Heart Rate (Resting)
+        if let rhr = metrics.restingHeartRate ?? metrics.heartRate {
+            if rhr > 100 {
+                NotificationManager.shared.sendHealthAlert(metricName: "Resting Heart Rate", currentValue: "\(Int(rhr)) BPM", healthyRange: "60-100 BPM")
+            } else if rhr < 40 {
+                NotificationManager.shared.sendHealthAlert(metricName: "Resting Heart Rate", currentValue: "\(Int(rhr)) BPM", healthyRange: "60-100 BPM")
+            }
+        }
+        
+        // Oxygen Saturation
+        if let o2 = metrics.oxygenSaturation, o2 < 0.94 {
+            NotificationManager.shared.sendHealthAlert(metricName: "Oxygen Saturation", currentValue: String(format: "%.1f%%", o2 * 100), healthyRange: ">95%")
+        }
+    }
+    
+    private func getValueForMetric(_ name: String, from metrics: HealthMetrics) -> Double? {
+        switch name {
+        case "Heart Rate": return metrics.heartRate
+        case "Resting Heart Rate": return metrics.restingHeartRate
+        case "Heart Rate Variability": return metrics.heartRateVariability
+        case "Oxygen Saturation": return metrics.oxygenSaturation
+        case "Respiratory Rate": return metrics.respiratoryRate
+        case "Body Weight": return metrics.bodyMass
+        case "BMI": return metrics.bmi
+        case "Steps": return metrics.steps.map { Double($0) }
+        case "Active Energy": return metrics.activeEnergyBurned
+        case "Wrist Temperature": return metrics.wristTemperature
+        case "Audio Exposure": return metrics.environmentalAudioExposure
+        case "Sleep Duration": 
+            if let sleepSamples = metrics.sleepAnalysis {
+                let totalDuration = sleepSamples
+                    .filter { $0.sleepType != .inBed && $0.sleepType != .awake }
+                    .reduce(0.0) { $0 + $1.duration }
+                return totalDuration / 3600.0 // hours
+            }
+            return nil
+        case "Time in Daylight": return metrics.timeInDaylight
+        case "Stress Level": return metrics.calculatedStressLevel
+        case "Mood": return metrics.moodScore
+        case "Blood Pressure":
+            if let bp = metrics.bloodPressure {
+                return bp.systolic
+            }
+            return nil
+        default: return nil
+        }
+    }
+    
+    private func formatValue(_ value: Double, metricName: String) -> String {
+        switch metricName {
+        case "Oxygen Saturation": return String(format: "%.1f%%", value * 100)
+        case "Heart Rate", "Resting Heart Rate": return String(format: "%.0f BPM", value)
+        case "Heart Rate Variability": return String(format: "%.0f ms", value)
+        case "Body Weight": return String(format: "%.1f kg", value)
+        case "BMI": return String(format: "%.1f", value)
+        case "Wrist Temperature": return String(format: "%.1f°C", value)
+        case "Audio Exposure": return String(format: "%.0f dB", value)
+        case "Sleep Duration": return String(format: "%.1f hours", value)
+        case "Time in Daylight": return String(format: "%.0f min", value)
+        case "Stress Level": return String(format: "%.0f/100", value)
+        case "Mood": return String(format: "%.1f/10", value)
+        case "Blood Pressure":
+            return String(format: "%.0f mmHg", value)
+        default: return String(format: "%.1f", value)
+        }
+    }
+    
+    private func isValueOutOfRange(_ value: Double, rangeString: String, metricName: String? = nil) -> Bool {
+        // Simple range parser for formats like "60-100", "<95", ">10", etc.
+        let cleaned = rangeString.replacingOccurrences(of: " BPM", with: "")
+            .replacingOccurrences(of: " ms", with: "")
+            .replacingOccurrences(of: "%", with: "")
+            .replacingOccurrences(of: " kg", with: "")
+            .replacingOccurrences(of: "°C", with: "")
+            .replacingOccurrences(of: " dB", with: "")
+            .replacingOccurrences(of: " mmHg", with: "")
+            .replacingOccurrences(of: " hours", with: "")
+            .replacingOccurrences(of: " min", with: "")
+            .replacingOccurrences(of: "/100", with: "")
+            .replacingOccurrences(of: "/10", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        
+        // For metrics where "higher is better", we interpret a single number as a minimum threshold
+        let higherIsBetterMetrics = ["Steps", "Time in Daylight", "Sleep Duration", "Mood", "Oxygen Saturation", "Heart Rate Variability"]
+        let isHigherBetter = higherIsBetterMetrics.contains(metricName ?? "")
+        
+        if cleaned.contains("/") {
+            // Blood pressure case: "120/80"
+            let parts = cleaned.components(separatedBy: "/")
+            if let systolicMax = Double(parts[0].trimmingCharacters(in: .whitespaces)) {
+                return value > systolicMax
+            }
+        }
+        
+        if cleaned.contains("-") {
+            let parts = cleaned.components(separatedBy: "-")
+            if parts.count == 2, let minVal = Double(parts[0].trimmingCharacters(in: .whitespaces)), let maxVal = Double(parts[1].trimmingCharacters(in: .whitespaces)) {
+                let checkValue = rangeString.contains("%") && value <= 1.0 ? value * 100 : value
+                return checkValue < minVal || checkValue > maxVal
+            }
+        } else if cleaned.hasPrefix("<") {
+            if let threshold = Double(cleaned.dropFirst().trimmingCharacters(in: .whitespaces)) {
+                let checkValue = rangeString.contains("%") && value <= 1.0 ? value * 100 : value
+                return checkValue >= threshold
+            }
+        } else if cleaned.hasPrefix(">") {
+            if let threshold = Double(cleaned.dropFirst().trimmingCharacters(in: .whitespaces)) {
+                let checkValue = rangeString.contains("%") && value <= 1.0 ? value * 100 : value
+                return checkValue <= threshold
+            }
+        } else if let threshold = Double(cleaned) {
+            // If just a single number is provided
+            let checkValue = rangeString.contains("%") && value <= 1.0 ? value * 100 : value
+            if isHigherBetter {
+                return checkValue < threshold // Alert if below minimum
+            } else {
+                return checkValue > threshold // Alert if above maximum (default)
+            }
+        }
+        
+        return false
+    }
+    
+    // MARK: - Historical Data Fetching
+    func fetchHistoricalData(days: Int, completion: (([DailyHealthMetrics]) -> Void)? = nil) {
+        if let goals = userGoals, goals.useMockSensorData {
+            loadMockHealthData()
+            completion?(self.historicalMetrics)
+            return
+        }
+        
+        self.isFetchingHistory = true
         let calendar = Calendar.current
         let today = Date()
+        
+        // Optimize: Sort out the date range first
         var dailyMetricsArray: [DailyHealthMetrics] = []
-        
         let dispatchGroup = DispatchGroup()
+        let metricsQueue = DispatchQueue(label: "com.wellnessai.historicalMetricsQueue")
         
-        // Fetch data for each of the last 7 days
-        for dayOffset in 0..<7 {
+        // We still use the daily fetch for complex combined metrics, 
+        // but we'll limit the range and ensure thread safety.
+        for dayOffset in 0..<days {
             dispatchGroup.enter()
-            
             guard let targetDate = calendar.date(byAdding: .day, value: -dayOffset, to: today) else {
                 dispatchGroup.leave()
                 continue
             }
             
             fetchDailyMetrics(for: targetDate) { dailyMetrics in
-                if let metrics = dailyMetrics {
-                    dailyMetricsArray.append(metrics)
+                metricsQueue.async {
+                    if let metrics = dailyMetrics {
+                        dailyMetricsArray.append(metrics)
+                    }
+                    dispatchGroup.leave()
                 }
-                dispatchGroup.leave()
             }
         }
         
@@ -270,14 +530,12 @@ class HealthKitManager: ObservableObject {
             // Sort by date (most recent first)
             dailyMetricsArray.sort { $0.date > $1.date }
             
-            // Ensure we only use the last 7 days (in case of duplicates or extra data)
-            let last7Days = Array(dailyMetricsArray.prefix(7))
-            
             // Basal: use HealthKit value when present and > 0; otherwise BMR from weight (HealthKit or user-provided) / height
             let bodyMass = self.healthMetrics?.bodyMass ?? self.userProvidedWeightKg
             let height = self.healthMetrics?.height
             let fallbackBMR = Self.calculateBMRFromWeightAndHeight(weightKg: bodyMass, heightM: height)
-            let correctedDailyMetrics: [DailyHealthMetrics] = last7Days.map { day in
+            
+            let correctedDailyMetrics: [DailyHealthMetrics] = dailyMetricsArray.map { day in
                 let basal: Double? = fallbackBMR
                 return DailyHealthMetrics(
                     date: day.date,
@@ -292,48 +550,165 @@ class HealthKitManager: ObservableObject {
                     environmentalAudioExposure: day.environmentalAudioExposure,
                     sleepDuration: day.sleepDuration,
                     timeInDaylight: day.timeInDaylight,
-                    wristTemperature: day.wristTemperature
+                    wristTemperature: day.wristTemperature,
+                    moodScore: day.moodScore,
+                    bloodPressure: day.bloodPressure,
+                    bodyWeight: day.bodyWeight
                 )
             }
             
-            // Calculate averages from corrected 7 days (basal from HealthKit or BMR fallback)
-            let avgHeartRate = self.calculateAverage(correctedDailyMetrics.compactMap { $0.heartRate })
-            let avgRestingHeartRate = self.calculateAverage(correctedDailyMetrics.compactMap { $0.restingHeartRate })
-            let avgHRV = self.calculateAverage(correctedDailyMetrics.compactMap { $0.heartRateVariability })
-            let avgOxygen = self.calculateAverage(correctedDailyMetrics.compactMap { $0.oxygenSaturation })
-            let avgRespiratory = self.calculateAverage(correctedDailyMetrics.compactMap { $0.respiratoryRate })
-            let avgSteps = self.calculateAverageInt(correctedDailyMetrics.compactMap { $0.steps })
-            let avgActiveEnergy = self.calculateAverage(correctedDailyMetrics.compactMap { $0.activeEnergyBurned })
-            let avgBasalEnergy = self.calculateAverage(correctedDailyMetrics.compactMap { $0.basalEnergyBurned })
-            let avgAudioExposure = self.calculateAverage(correctedDailyMetrics.compactMap { $0.environmentalAudioExposure })
-            let avgSleep = self.calculateAverage(correctedDailyMetrics.compactMap { $0.sleepDuration })
-            let avgTimeInDaylight = self.calculateAverage(correctedDailyMetrics.compactMap { $0.timeInDaylight })
-            let avgWristTemperature = self.calculateAverage(correctedDailyMetrics.compactMap { $0.wristTemperature })
+            self.historicalMetrics = correctedDailyMetrics
             
-            // Get today's metrics (first in sorted array)
-            let todayMetrics = correctedDailyMetrics.first
+            // If we fetched 7 days, also update sevenDayMetrics for the dashboard
+            if days == 7 {
+                self.updateSevenDayMetrics(with: correctedDailyMetrics)
+            }
             
-            self.sevenDayMetrics = SevenDayHealthMetrics(
-                dailyMetrics: correctedDailyMetrics,
-                avgHeartRate: avgHeartRate,
-                avgRestingHeartRate: avgRestingHeartRate,
-                avgHeartRateVariability: avgHRV,
-                avgOxygenSaturation: avgOxygen,
-                avgRespiratoryRate: avgRespiratory,
-                avgSteps: avgSteps,
-                avgActiveEnergyBurned: avgActiveEnergy,
-                avgBasalEnergyBurned: avgBasalEnergy,
-                avgEnvironmentalAudioExposure: avgAudioExposure,
-                avgSleepDuration: avgSleep,
-                avgTimeInDaylight: avgTimeInDaylight,
-                avgWristTemperature: avgWristTemperature,
-                todayMetrics: todayMetrics,
-                bodyMass: self.healthMetrics?.bodyMass,
-                height: self.healthMetrics?.height,
-                bloodPressure: self.healthMetrics?.bloodPressure
-            )
-            
+            self.isFetchingHistory = false
             self.isLoading = false
+            completion?(correctedDailyMetrics)
+        }
+    }
+    
+    func loadMockHealthData() {
+        guard let url = Bundle.main.url(forResource: "mock_health_data", withExtension: "json") else {
+            print("Mock health data file not found in bundle.")
+            return
+        }
+        
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            
+            let profiles = try decoder.decode([String: [DailyHealthMetrics]].self, from: data)
+            let profileName = userGoals?.selectedMockProfile ?? "Normal"
+            guard let rawMetrics = profiles[profileName] else {
+                print("Profile \(profileName) not found in mock data.")
+                return
+            }
+            
+            // Adjust dates dynamically so index 0 is Today, index 1 is Yesterday, etc.
+            let adjustedMetrics = rawMetrics.enumerated().map { index, metric in
+                let adjustedDate = Calendar.current.date(byAdding: .day, value: -index, to: Date()) ?? Date()
+                return DailyHealthMetrics(
+                    date: adjustedDate,
+                    heartRate: metric.heartRate,
+                    restingHeartRate: metric.restingHeartRate,
+                    heartRateVariability: metric.heartRateVariability,
+                    oxygenSaturation: metric.oxygenSaturation,
+                    respiratoryRate: metric.respiratoryRate,
+                    steps: metric.steps,
+                    activeEnergyBurned: metric.activeEnergyBurned,
+                    basalEnergyBurned: metric.basalEnergyBurned,
+                    environmentalAudioExposure: metric.environmentalAudioExposure,
+                    sleepDuration: metric.sleepDuration,
+                    timeInDaylight: metric.timeInDaylight,
+                    wristTemperature: metric.wristTemperature,
+                    moodScore: metric.moodScore,
+                    bloodPressure: metric.bloodPressure,
+                    bodyWeight: metric.bodyWeight
+                )
+            }
+            
+            DispatchQueue.main.async {
+                self.historicalMetrics = adjustedMetrics
+                self.isLoading = false
+                
+                // Update averages based on configured range
+                self.updateSevenDayMetrics(with: adjustedMetrics)
+                
+                // Map today's health metrics from the first (newest) item
+                if let today = adjustedMetrics.first {
+                    var bp: BloodPressure? = nil
+                    if let bpString = today.bloodPressure {
+                        let parts = bpString.components(separatedBy: "/")
+                        if parts.count == 2, let sys = Double(parts[0]), let dia = Double(parts[1]) {
+                            bp = BloodPressure(systolic: sys, diastolic: dia)
+                        }
+                    }
+                    
+                    self.healthMetrics = HealthMetrics(
+                        heartRate: today.heartRate,
+                        restingHeartRate: today.restingHeartRate,
+                        heartRateVariability: today.heartRateVariability,
+                        bloodPressure: bp,
+                        oxygenSaturation: today.oxygenSaturation,
+                        bodyMass: today.bodyWeight ?? 70.0,
+                        height: 1.75,
+                        steps: today.steps,
+                        activeEnergyBurned: today.activeEnergyBurned,
+                        basalEnergyBurned: today.basalEnergyBurned,
+                        sleepAnalysis: nil,
+                        stressLevel: nil,
+                        respiratoryRate: today.respiratoryRate,
+                        environmentalAudioExposure: today.environmentalAudioExposure,
+                        medications: nil,
+                        timeInDaylight: today.timeInDaylight,
+                        wristTemperature: today.wristTemperature,
+                        moodScore: today.moodScore
+                    )
+                }
+            }
+            
+        } catch {
+            print("Error loading mock health data: \(error)")
+        }
+    }
+    
+    func fetch7DayHealthData() {
+        fetchHistoricalData(days: 7)
+    }
+    
+    private func updateSevenDayMetrics(with metrics: [DailyHealthMetrics]) {
+        let count = userGoals?.historicalAverageDays ?? 5
+        let slicedMetrics = Array(metrics.prefix(count))
+        
+        // Calculate averages from corrected metrics
+        let avgHeartRate = self.calculateAverage(slicedMetrics.compactMap { $0.heartRate })
+        let avgRestingHeartRate = self.calculateAverage(slicedMetrics.compactMap { $0.restingHeartRate })
+        let avgHRV = self.calculateAverage(slicedMetrics.compactMap { $0.heartRateVariability })
+        let avgOxygen = self.calculateAverage(slicedMetrics.compactMap { $0.oxygenSaturation })
+        let avgRespiratory = self.calculateAverage(slicedMetrics.compactMap { $0.respiratoryRate })
+        let avgSteps = self.calculateAverageInt(slicedMetrics.compactMap { $0.steps })
+        let avgActiveEnergy = self.calculateAverage(slicedMetrics.compactMap { $0.activeEnergyBurned })
+        let avgBasalEnergy = self.calculateAverage(slicedMetrics.compactMap { $0.basalEnergyBurned })
+        let avgAudioExposure = self.calculateAverage(slicedMetrics.compactMap { $0.environmentalAudioExposure })
+        let avgSleep = self.calculateAverage(slicedMetrics.compactMap { $0.sleepDuration })
+        let avgTimeInDaylight = self.calculateAverage(slicedMetrics.compactMap { $0.timeInDaylight })
+        let avgWristTemperature = self.calculateAverage(slicedMetrics.compactMap { $0.wristTemperature })
+        let avgMoodScore = self.calculateAverage(slicedMetrics.compactMap { $0.moodScore })
+        
+        // Get today's metrics (first in sorted array)
+        let todayMetrics = metrics.first
+        
+        self.sevenDayMetrics = SevenDayHealthMetrics(
+            dailyMetrics: metrics,
+            avgHeartRate: avgHeartRate,
+            avgRestingHeartRate: avgRestingHeartRate,
+            avgHeartRateVariability: avgHRV,
+            avgOxygenSaturation: avgOxygen,
+            avgRespiratoryRate: avgRespiratory,
+            avgSteps: avgSteps,
+            avgActiveEnergyBurned: avgActiveEnergy,
+            avgBasalEnergyBurned: avgBasalEnergy,
+            avgEnvironmentalAudioExposure: avgAudioExposure,
+            avgSleepDuration: avgSleep,
+            avgTimeInDaylight: avgTimeInDaylight,
+            avgWristTemperature: avgWristTemperature,
+            avgMoodScore: avgMoodScore,
+            todayMetrics: todayMetrics,
+            bodyMass: self.healthMetrics?.bodyMass,
+            height: self.healthMetrics?.height,
+            bloodPressure: self.healthMetrics?.bloodPressure
+        )
+        
+        if let userGoals = self.userGoals {
+            WidgetDataManager.shared.updateWidgetData(
+                userGoals: userGoals,
+                healthMetrics: self.healthMetrics,
+                sevenDayMetrics: self.sevenDayMetrics
+            )
         }
     }
     
@@ -361,6 +736,7 @@ class HealthKitManager: ObservableObject {
         var sleepDuration: Double?
         var timeInDaylight: Double?
         var wristTemperature: Double?
+        var moodScore: Double?
         
         // Fetch heart rate
         dispatchGroup.enter()
@@ -446,6 +822,16 @@ class HealthKitManager: ObservableObject {
             dispatchGroup.leave()
         }
         
+        // Fetch mood score
+        dispatchGroup.enter()
+        fetchStateOfMindSamples(from: startOfDay, to: endOfDay) { samples in
+            if !samples.isEmpty {
+                let sumValence = samples.reduce(0.0) { $0 + $1.valence }
+                moodScore = (sumValence / Double(samples.count)) * 9.0 + 1.0
+            }
+            dispatchGroup.leave()
+        }
+        
         dispatchGroup.notify(queue: .global()) {
             let dailyMetrics = DailyHealthMetrics(
                 date: date,
@@ -460,7 +846,10 @@ class HealthKitManager: ObservableObject {
                 environmentalAudioExposure: audioExposure,
                 sleepDuration: sleepDuration,
                 timeInDaylight: timeInDaylight,
-                wristTemperature: wristTemperature
+                wristTemperature: wristTemperature,
+                moodScore: moodScore,
+                bloodPressure: nil,
+                bodyWeight: nil
             )
             completion(dailyMetrics)
         }
@@ -912,6 +1301,29 @@ class HealthKitManager: ObservableObject {
         case 5: return .rem
         default: return .asleep
         }
+    }
+    
+    private func fetchStateOfMindSamples(from startDate: Date, to endDate: Date, completion: @escaping ([HKStateOfMind]) -> Void) {
+        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: endDate, options: .strictStartDate)
+        let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
+        
+        let query = HKSampleQuery(
+            sampleType: HKObjectType.stateOfMindType(),
+            predicate: predicate,
+            limit: 50,
+            sortDescriptors: [sortDescriptor]
+        ) { _, samples, error in
+            if let error = error {
+                print("Error fetching State of Mind: \(error.localizedDescription)")
+                completion([])
+                return
+            }
+            
+            let moodSamples = samples as? [HKStateOfMind] ?? []
+            completion(moodSamples)
+        }
+        
+        healthStore.execute(query)
     }
     
     private func fetchSleepMetrics(from startDate: Date, to endDate: Date, completion: @escaping (Double?, Double?, Double?) -> Void) {

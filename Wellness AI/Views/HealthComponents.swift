@@ -132,6 +132,7 @@ struct VitalSignCard: View {
 
 struct DailyVitalSignRow: View {
     let dailyMetrics: DailyHealthMetrics
+    var previousMetrics: DailyHealthMetrics? = nil
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -157,7 +158,9 @@ struct DailyVitalSignRow: View {
                     value: "\(String(format: "%.1f", dailyMetrics.heartRate ?? 0))",
                     unit: "BPM",
                     color: .red,
-                    history: []
+                    history: [],
+                    previousValue: previousMetrics?.heartRate,
+                    isHigherBetter: false
                 )
                 
                 HealthMetricBadge(
@@ -166,7 +169,9 @@ struct DailyVitalSignRow: View {
                     value: "\(String(format: "%.1f", dailyMetrics.restingHeartRate ?? 0))",
                     unit: "BPM",
                     color: .pink,
-                    history: []
+                    history: [],
+                    previousValue: previousMetrics?.restingHeartRate,
+                    isHigherBetter: false
                 )
                 
                 HealthMetricBadge(
@@ -175,7 +180,9 @@ struct DailyVitalSignRow: View {
                     value: "\(String(format: "%.1f", dailyMetrics.heartRateVariability ?? 0))",
                     unit: "ms",
                     color: .green,
-                    history: []
+                    history: [],
+                    previousValue: previousMetrics?.heartRateVariability,
+                    isHigherBetter: true
                 )
                 
                 HealthMetricBadge(
@@ -184,7 +191,9 @@ struct DailyVitalSignRow: View {
                     value: "\(String(format: "%.1f", (dailyMetrics.oxygenSaturation ?? 0) * 100))",
                     unit: "%",
                     color: .blue,
-                    history: []
+                    history: [],
+                    previousValue: previousMetrics?.oxygenSaturation.map { $0 * 100 },
+                    isHigherBetter: true
                 )
                 
                 HealthMetricBadge(
@@ -193,7 +202,9 @@ struct DailyVitalSignRow: View {
                     value: "\(String(format: "%.1f", dailyMetrics.sleepDuration ?? 0))",
                     unit: "h",
                     color: .purple,
-                    history: []
+                    history: [],
+                    previousValue: previousMetrics?.sleepDuration,
+                    isHigherBetter: true
                 )
             }
         }
@@ -236,11 +247,28 @@ struct HealthMetricBadge: View {
     var unit: String = ""
     let color: Color
     let history: [Double]
+    var previousValue: Double? = nil
+    var isHigherBetter: Bool? = nil
     
     @State private var showPaywall = false
     
     private var valueDouble: Double {
         Double(value) ?? 0
+    }
+    
+    private var trendColor: Color {
+        guard let prev = previousValue, let betterHigh = isHigherBetter, valueDouble != prev else { return .secondary }
+        let increased = valueDouble > prev
+        if betterHigh {
+            return increased ? .green : .red
+        } else {
+            return increased ? .red : .green
+        }
+    }
+    
+    private var trendIcon: String {
+        guard let prev = previousValue, valueDouble != prev else { return "minus" }
+        return valueDouble > prev ? "arrow.up.right" : "arrow.down.right"
     }
     
     var body: some View {
@@ -280,6 +308,12 @@ struct HealthMetricBadge: View {
                         Text(unit)
                             .font(.caption2)
                             .foregroundColor(.secondary)
+                    }
+                    if previousValue != nil {
+                        Image(systemName: trendIcon)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(trendColor)
+                            .padding(.leading, 2)
                     }
                 }
             }

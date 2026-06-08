@@ -1,16 +1,35 @@
 import SwiftUI
 import PhotosUI
 
+enum MealType: String, CaseIterable, Codable {
+    case breakfast = "Breakfast"
+    case lunch = "Lunch"
+    case dinner = "Dinner"
+    case snack = "Snack"
+    
+    var icon: String {
+        switch self {
+        case .breakfast: return "sunrise"
+        case .lunch: return "sun.max"
+        case .dinner: return "sunset"
+        case .snack: return "leaf"
+        }
+    }
+}
+
 struct NutritionView: View {
     @EnvironmentObject var healthKitManager: HealthKitManager
     @EnvironmentObject var openAIManager: OpenAIAPIManager
     @EnvironmentObject var userGoals: UserGoals
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @Binding var viewMode: AppViewMode
+    var categoryPicker: AnyView? = nil
+    var backButton: AnyView? = nil
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var logPhoto: UIImage?
     @State private var showingImagePicker = false
     @State private var showingCamera = false
+    @State private var showingVoiceImport = false
     @State private var selectedMealType: MealType = .breakfast
     @State private var showingMealHistory = false
     @State private var analyzingLog = false
@@ -20,22 +39,6 @@ struct NutritionView: View {
     
     private var isWeekMode: Bool {
         viewMode == .week
-    }
-    
-    enum MealType: String, CaseIterable, Codable {
-        case breakfast = "Breakfast"
-        case lunch = "Lunch"
-        case dinner = "Dinner"
-        case snack = "Snack"
-        
-        var icon: String {
-            switch self {
-            case .breakfast: return "sunrise"
-            case .lunch: return "sun.max"
-            case .dinner: return "sunset"
-            case .snack: return "leaf"
-            }
-        }
     }
     
     var body: some View {
@@ -60,19 +63,26 @@ struct NutritionView: View {
                         
                         // 6. Meal History — list of what was logged
                         mealHistorySection
-                        
-                        // 7. Settings — configuration at bottom
-                        settingsSection
                     }
                     .padding()
                 }
-                .navigationTitle("Nutrition")
-                .navigationBarTitleDisplayMode(.large)
+                .navigationTitle((categoryPicker == nil && backButton == nil) ? "Nutrition" : "")
+                .navigationBarTitleDisplayMode((categoryPicker == nil && backButton == nil) ? .large : .inline)
                 .toolbar {
+                    if let backBtn = backButton {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            backBtn
+                        }
+                    }
+                    if let picker = categoryPicker {
+                        ToolbarItem(placement: .principal) {
+                            picker
+                        }
+                    }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Picker("View Mode", selection: $viewMode) {
                             Text("Today").tag(AppViewMode.today)
-                            Text("Week").tag(AppViewMode.week)
+                            Text("\(userGoals.historicalAverageDays) Days").tag(AppViewMode.week)
                         }
                         .pickerStyle(.segmented)
                         .frame(width: 180)
@@ -101,6 +111,11 @@ struct NutritionView: View {
                 .sheet(isPresented: $showPaywall) {
                     NavigationView { PaywallView(onClose: { showPaywall = false }) }
                         .environmentObject(subscriptionManager)
+                }
+                .sheet(isPresented: $showingVoiceImport) {
+                    NutritionVoiceImportView(onComplete: {})
+                        .environmentObject(userGoals)
+                        .environmentObject(openAIManager)
                 }
             }
             
@@ -134,60 +149,7 @@ struct NutritionView: View {
         .animation(.spring(), value: openAIManager.lastMetricAnalysis != nil)
     }
     
-    private var settingsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Settings")
-                    .font(.title3)
-                    .fontWeight(.bold)
-                Spacer()
-            }
-            
-            HStack {
-                Image(systemName: "applewatch")
-                    .font(.title2)
-                    .foregroundColor(.cyan)
-                    .frame(width: 30)
-                
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Smartwatch")
-                        .font(.headline)
-                    Text(userGoals.hasAppleWatch ? "Access all health features" : "Nutrition tracking only")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                
-                Spacer()
-                
-                Toggle("", isOn: Binding(
-                    get: { userGoals.hasAppleWatch },
-                    set: { newValue in
-                        userGoals.hasAppleWatch = newValue
-                        userGoals.completeOnboarding() // Save the changes
-                    }
-                ))
-                .labelsHidden()
-                .tint(.cyan)
-            }
-            .padding()
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(uiColor: .secondarySystemBackground))
-            )
-            
-            if !userGoals.hasAppleWatch {
-                HStack(spacing: 8) {
-                    Image(systemName: "info.circle.fill")
-                        .foregroundColor(.blue)
-                        .font(.caption)
-                    Text("Enable Smartwatch to access Exercise, Health, and Wellbeing tabs")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.horizontal, 4)
-            }
-        }
-    }
+
     
     private var viewModeSelectorSection: some View {
         EmptyView()
@@ -220,13 +182,13 @@ struct NutritionView: View {
 
     private var nutritionOverviewSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(isWeekMode ? "Weekly Overview (Daily Avg)" : "Today's Overview")
+            Text(isWeekMode ? "\(userGoals.historicalAverageDays)-Day Overview (Daily Avg)" : "Today's Overview")
                 .font(.title2)
                 .fontWeight(.bold)
             
             let meals = getMealsForPeriod()
             let totals = calculateNutritionTotals(meals)
-            let divisor = isWeekMode ? 7.0 : 1.0
+            let divisor = isWeekMode ? Double(userGoals.historicalAverageDays) : 1.0
             
             VStack(spacing: 10) {
                 // Calories - full width
@@ -436,6 +398,18 @@ struct NutritionView: View {
                                 .background(Color.blue)
                                 .cornerRadius(12)
                         }
+                        
+                        Button(action: { showingVoiceImport = true }) {
+                            HStack {
+                                Image(systemName: "mic.fill")
+                                Text("Log with Voice or Text")
+                            }
+                            .font(.headline)
+                            .foregroundColor(.purple)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(RoundedRectangle(cornerRadius: 12).stroke(Color.purple, lineWidth: 2))
+                        }
                     }
                     .frame(maxWidth: .infinity, minHeight: 250)
                     .background(
@@ -476,6 +450,19 @@ struct NutritionView: View {
                             .font(.subheadline)
                             .fontWeight(.medium)
                             .foregroundColor(progress >= 1 ? .green : .primary)
+                        
+                        if let score = calculateSingleMetricScore(metricName: "Water", value: String(displayML)) {
+                            Text("\(score)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(
+                                    Capsule()
+                                        .fill(score >= 80 ? Color.green : (score >= 50 ? Color.orange : Color.red))
+                                )
+                        }
+                        
                         Text(isWeekMode ? "avg" : "today")
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -503,6 +490,11 @@ struct NutritionView: View {
                     .fill(Color.blue.opacity(0.08))
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.blue.opacity(0.2), lineWidth: 1))
             )
+            
+            // Week mode: N-day bar chart
+            if isWeekMode && !weekTotals.isEmpty {
+                hydrationBarChart(weekTotals: weekTotals, goalML: goalML)
+            }
             
             // Today's drinks list (compact)
             if !isWeekMode {
@@ -536,6 +528,66 @@ struct NutritionView: View {
                 }
             }
         }
+    }
+
+    /// Renders a bar chart showing daily hydration vs. goal for the given days (oldest → newest).
+    private func hydrationBarChart(weekTotals: [(date: Date, totalML: Double)], goalML: Double) -> some View {
+        let days = weekTotals.reversed() // oldest first
+        let maxML = max(goalML * 1.2, days.map(\.totalML).max() ?? 1)
+        let df: DateFormatter = {
+            let f = DateFormatter()
+            f.dateFormat = "EEE"
+            return f
+        }()
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Daily history")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+
+            GeometryReader { geo in
+                let barCount = days.count
+                let spacing: CGFloat = 6
+                let totalSpacing = spacing * CGFloat(barCount - 1)
+                let barWidth = (geo.size.width - totalSpacing) / CGFloat(barCount)
+                let chartHeight: CGFloat = 90
+
+                ZStack(alignment: .bottom) {
+                    // Goal dashed line
+                    let goalY = chartHeight * (1 - goalML / maxML)
+                    Path { p in
+                        p.move(to: CGPoint(x: 0, y: goalY))
+                        p.addLine(to: CGPoint(x: geo.size.width, y: goalY))
+                    }
+                    .stroke(Color.blue.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4]))
+
+                    // Bars
+                    HStack(alignment: .bottom, spacing: spacing) {
+                        ForEach(Array(days.enumerated()), id: \.offset) { idx, day in
+                            let ratio = maxML > 0 ? min(1.0, day.totalML / maxML) : 0
+                            let hitGoal = day.totalML >= goalML
+                            VStack(spacing: 4) {
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(hitGoal ? Color.blue : Color.blue.opacity(0.3))
+                                    .frame(width: barWidth, height: max(4, chartHeight * ratio))
+                                Text(df.string(from: day.date))
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .bottom)
+                }
+                .frame(height: chartHeight + 20)
+            }
+            .frame(height: 120)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.secondarySystemBackground))
+        )
     }
     
     private func analyzeMealOrDrinkPhoto(_ imageData: Data) async {
@@ -668,6 +720,7 @@ struct NutritionView: View {
             Text(isWeekMode ? "Meals This Week" : "Today's Meals")
                 .font(.title2)
                 .fontWeight(.bold)
+                .padding(.horizontal)
             
             let meals = getMealsForPeriod()
             
@@ -679,21 +732,21 @@ struct NutritionView: View {
                     Text("No meals logged yet")
                         .font(.headline)
                         .foregroundColor(.secondary)
-                    Text("Take a photo of your meal to get started")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, minHeight: 100)
                 .padding()
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color(.systemBackground))
-                        .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
-                )
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground)).shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1))
+                .padding(.horizontal)
             } else {
-                ForEach(meals.sorted { $0.timestamp > $1.timestamp }, id: \.id) { meal in
-                    MealEntryCard(meal: meal)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 16) {
+                        ForEach(meals.sorted { $0.timestamp > $1.timestamp }, id: \.id) { meal in
+                            MealEntryCard(meal: meal)
+                                .frame(width: 280)
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 4)
                 }
             }
         }
@@ -747,32 +800,9 @@ struct NutritionView: View {
             let nutritionRecommendations = openAIManager.recommendations.filter { $0.category == .nutrition }
             
             if !subscriptionManager.isSubscribed {
-                VStack(spacing: 12) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 40))
-                        .foregroundColor(.gray)
-                    Text("AI recommendations are available with the Monthly plan.")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    Button("Subscribe") {
-                        showPaywall = true
-                    }
-                    .font(.headline)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 10)
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
+                PremiumTeaserView(category: .nutrition) {
+                    showPaywall = true
                 }
-                .frame(maxWidth: .infinity, minHeight: 100)
-                .padding()
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color(.systemBackground))
-                        .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
-                )
             } else if nutritionRecommendations.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "leaf.fill")
@@ -809,21 +839,21 @@ struct NutritionView: View {
         // Basal + active energy only (no calorie target)
         let basalEnergy: Double
         if isWeekMode {
-            basalEnergy = (healthKitManager.sevenDayMetrics?.avgBasalEnergyBurned ?? 0) * 7.0
+            basalEnergy = (healthKitManager.sevenDayMetrics?.avgBasalEnergyBurned ?? 0) * Double(userGoals.historicalAverageDays)
         } else {
             basalEnergy = healthKitManager.healthMetrics?.basalEnergyBurned ?? 0
         }
         
         let activeEnergy: Double
         if isWeekMode {
-            activeEnergy = (healthKitManager.sevenDayMetrics?.avgActiveEnergyBurned ?? 0) * 7.0
+            activeEnergy = (healthKitManager.sevenDayMetrics?.avgActiveEnergyBurned ?? 0) * Double(userGoals.historicalAverageDays)
         } else {
             activeEnergy = healthKitManager.healthMetrics?.activeEnergyBurned ?? 0
         }
         
         let tdee = basalEnergy + activeEnergy
         let netCalories = tdee - caloriesConsumed
-        let divisor = isWeekMode ? 7.0 : 1.0
+        let divisor = isWeekMode ? Double(userGoals.historicalAverageDays) : 1.0
         
         return VStack(alignment: .leading, spacing: 16) {
             Button(action: { withAnimation { showCalorieGoalExpanded.toggle() }}) {
@@ -1049,9 +1079,22 @@ struct FeaturedNutritionCard: View {
                         Text(title)
                             .font(.headline)
                             .foregroundColor(.primary)
-                        Image(systemName: "sparkles")
-                            .font(.caption2)
-                            .foregroundColor(color.opacity(0.8))
+                        
+                        if let score = calculateSingleMetricScore(metricName: "Calorie Intake", value: value) {
+                            Text("\(score)")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule()
+                                        .fill(score >= 80 ? Color.green : (score >= 50 ? Color.orange : Color.red))
+                                )
+                        } else {
+                            Image(systemName: "sparkles")
+                                .font(.caption2)
+                                .foregroundColor(color.opacity(0.8))
+                        }
                     }
                     
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -1407,6 +1450,7 @@ struct MacronutrientLegend: View {
 
 struct MealEntryCard: View {
     let meal: CodableMealEntry
+    @EnvironmentObject var userGoals: UserGoals
     @State private var showAllFoodItems = false
     
     private var mealTypeIcon: String {
@@ -1434,12 +1478,62 @@ struct MealEntryCard: View {
                 Text(meal.timestamp, style: .time)
                     .font(.caption)
                     .foregroundColor(.secondary)
+                
+                Menu {
+                    Text("Duplicate as...")
+                    ForEach(MealType.allCases, id: \.self) { type in
+                        Button(action: {
+                            userGoals.duplicateMealToToday(meal, asMealType: type.rawValue)
+                        }) {
+                            Label(type.rawValue, systemImage: type.icon)
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    Button(role: .destructive, action: {
+                        userGoals.removeMeal(meal)
+                    }) {
+                        Label("Delete", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundColor(.secondary)
+                        .padding(.leading, 8)
+                }
             }
             
-            Text("\(Int(meal.calories)) calories")
-                .font(.title2)
-                .fontWeight(.bold)
-                .foregroundColor(.orange)
+            HStack(alignment: .bottom) {
+                Text("\(Int(meal.calories)) calories")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .foregroundColor(.orange)
+                
+                Spacer()
+                
+                if !Calendar.current.isDateInToday(meal.timestamp) {
+                    Menu {
+                        ForEach(MealType.allCases, id: \.self) { type in
+                            Button(action: {
+                                userGoals.duplicateMealToToday(meal, asMealType: type.rawValue)
+                            }) {
+                                Label("Log as \(type.rawValue)", systemImage: type.icon)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus.circle")
+                            Text("Log for today")
+                        }
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.blue.opacity(0.1))
+                        .cornerRadius(20)
+                    }
+                }
+            }
             
             VStack(spacing: 8) {
                 HStack(spacing: 12) {

@@ -10,9 +10,17 @@
 	<string>This app needs camera access to analyze your meals for nutritional information.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>This app needs photo library access to analyze your meals for nutritional information.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>This app uses motion data to provide an immersive and interactive background experience.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>This app needs microphone access to dictate your medical conditions and medications.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>This app needs speech recognition access to transcribe your spoken voice into text.</string>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>healthkit</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Nessa requires location access to fetch real-time local weather, air quality, and pollen levels for tracking environmental health risk factors.</string>
 </dict>
 </plist>

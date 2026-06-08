@@ -1,0 +1,15 @@
+# Xcode files
+.DS_Store
+build/
+DerivedData/
+*.moved-aside
+*.xcuserstate
+
+# Personal user settings
+xcuserdata/
+
+# Project files we don't want to track
+buildServer.json
+
+# API Secrets / Configuration plists
+Wellness AI/Secrets.plist

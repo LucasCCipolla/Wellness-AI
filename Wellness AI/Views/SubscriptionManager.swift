@@ -14,8 +14,12 @@ class SubscriptionManager: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var products: [Product] = []
     
-    /// Replace this product identifier with your actual subscription product identifier
-    let productIdentifiers = ["nessa.mensal"]
+    /// Product identifiers for monthly and annual subscriptions
+    let productIdentifiers = ["nessamensal", "nessaanual", "nessa.mensal", "nessa.mensal2"]
+
+    var monthlyProduct: Product? { product(for: "nessamensal") }
+    var annualProduct: Product? { product(for: "nessaanual") }
+
     
     init() {
         Task {
@@ -109,7 +113,7 @@ class SubscriptionManager: ObservableObject {
     
     /// Starts a purchase of the monthly subscription product
     func purchaseMonthly() async throws {
-        guard let monthlyProduct = product(for: productIdentifiers[0]) else {
+        guard let monthlyProduct = product(for: "nessamensal") else {
             throw PurchaseError.productNotFound
         }
         
@@ -143,6 +147,43 @@ class SubscriptionManager: ObservableObject {
             break
         }
     }
+
+    /// Starts a purchase of the annual subscription product
+    func purchaseAnnual() async throws {
+        guard let annualProduct = product(for: "nessaanual") else {
+            throw PurchaseError.productNotFound
+        }
+
+        let result = try await annualProduct.purchase()
+
+        switch result {
+        case .success(let verification):
+            let transaction = try verify(verification)
+            await transaction.finish()
+
+            // Only set subscribed if entitlement is active (not revoked and not expired)
+            let now = Date()
+            let isActive: Bool = {
+                if let revocationDate = transaction.revocationDate, revocationDate <= now {
+                    return false
+                }
+                if let expiration = transaction.expirationDate {
+                    return expiration > now
+                }
+                // Non-expiring entitlement
+                return true
+            }()
+
+            await MainActor.run {
+                self.isSubscribed = isActive
+            }
+
+        case .userCancelled, .pending:
+            break
+        @unknown default:
+            break
+        }
+    }
     
     /// Restores purchases by finishing any un-finished current entitlements and updates entitlement status
     func restore() async {
@@ -162,8 +203,12 @@ class SubscriptionManager: ObservableObject {
         switch result {
         case .verified(let safe):
             return safe
-        case .unverified:
+        case .unverified(let unsafe, _):
+            #if DEBUG
+            return unsafe
+            #else
             throw PurchaseError.unverifiedTransaction
+            #endif
         }
     }
     

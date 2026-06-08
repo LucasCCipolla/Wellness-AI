@@ -10,6 +10,8 @@ struct ExerciseView: View {
     @EnvironmentObject var userGoals: UserGoals
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @Binding var viewMode: AppViewMode
+    var categoryPicker: AnyView? = nil
+    var backButton: AnyView? = nil
     @State private var expandedWorkoutId: Date?
     @State private var showDailyBreakdown = false
     @State private var showPaywall = false
@@ -50,6 +52,9 @@ struct ExerciseView: View {
                         // 1. AI Exercise Recommendations — first for monetization; primary value prop
                         aiRecommendationsSection
                         
+                        // Expected Exercise Performance score & recovery advisor
+                        exercisePerformanceExpectedSection
+                        
                         // 2. Exercise Overview — today's/week's activity at a glance
                         exerciseMetricsSection
                         
@@ -66,13 +71,23 @@ struct ExerciseView: View {
                     }
                     .padding()
                 }
-                .navigationTitle("Exercise")
-                .navigationBarTitleDisplayMode(.large)
+                .navigationTitle((categoryPicker == nil && backButton == nil) ? "Exercise" : "")
+                .navigationBarTitleDisplayMode((categoryPicker == nil && backButton == nil) ? .large : .inline)
                 .toolbar {
+                    if let backBtn = backButton {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            backBtn
+                        }
+                    }
+                    if let picker = categoryPicker {
+                        ToolbarItem(placement: .principal) {
+                            picker
+                        }
+                    }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Picker("View Mode", selection: $viewMode) {
                             Text("Today").tag(AppViewMode.today)
-                            Text("Week").tag(AppViewMode.week)
+                            Text("\(userGoals.historicalAverageDays) Days").tag(AppViewMode.week)
                         }
                         .pickerStyle(.segmented)
                         .frame(width: 180)
@@ -222,12 +237,8 @@ struct ExerciseView: View {
                 let workoutCount = filteredWorkouts.count
                 let avgHeartRate = filteredWorkouts.compactMap { $0.averageHeartRate }.reduce(0, +) / Double(max(filteredWorkouts.compactMap { $0.averageHeartRate }.count, 1))
                 
-                VStack(spacing: 12) {
-                    // Primary Stats
-                    LazyVGrid(columns: [
-                        GridItem(.flexible()),
-                        GridItem(.flexible())
-                    ], spacing: 12) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
                         StatCard(
                             title: "Workouts",
                             value: "\(workoutCount)",
@@ -236,6 +247,7 @@ struct ExerciseView: View {
                             icon: "figure.run",
                             color: .blue
                         )
+                        .frame(width: 160)
                         
                         StatCard(
                             title: "Total Time",
@@ -243,8 +255,10 @@ struct ExerciseView: View {
                             subtitle: "active duration",
                             healthyRange: "up to 150 min/day",
                             icon: "clock.fill",
-                            color: .green
+                            color: .green,
+                            score: calculateSingleMetricScore(metricName: "Workout Duration", value: String(totalDuration / 60))
                         )
+                        .frame(width: 160)
                         
                         StatCard(
                             title: "Calories Burned",
@@ -254,6 +268,7 @@ struct ExerciseView: View {
                             icon: "flame.fill",
                             color: .orange
                         )
+                        .frame(width: 160)
                         
                         StatCard(
                             title: "Distance",
@@ -263,6 +278,7 @@ struct ExerciseView: View {
                             icon: "location.fill",
                             color: .purple
                         )
+                        .frame(width: 160)
                         
                         if !filteredWorkouts.isEmpty && avgHeartRate > 0 {
                             StatCard(
@@ -271,10 +287,13 @@ struct ExerciseView: View {
                                 subtitle: "BPM (during workouts)",
                                 healthyRange: "60-80% max",
                                 icon: "heart.fill",
-                                color: .red
+                                color: .red,
+                                score: calculateSingleMetricScore(metricName: "Heart Rate", value: String(avgHeartRate))
                             )
+                            .frame(width: 160)
                         }
                     }
+                    .padding(.vertical, 4)
                 }
             }
         }
@@ -283,7 +302,7 @@ struct ExerciseView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Button(action: { withAnimation { showDailyBreakdown.toggle() }}) {
                     HStack {
-                        Text("Daily Breakdown (Last 7 Days)")
+                        Text("Daily Breakdown (Last \(userGoals.historicalAverageDays) Days)")
                             .font(.headline)
                             .foregroundColor(.primary)
                         Spacer()
@@ -296,8 +315,9 @@ struct ExerciseView: View {
                 .buttonStyle(PlainButtonStyle())
                 
                 if showDailyBreakdown, let sevenDayData = healthKitManager.sevenDayMetrics {
-                    ForEach(sevenDayData.dailyMetrics, id: \.date) { daily in
-                        DailyExerciseRow(dailyMetrics: daily)
+                    ForEach(Array(sevenDayData.dailyMetrics.prefix(userGoals.historicalAverageDays).enumerated()), id: \.element.date) { index, daily in
+                        let previousDay = (index + 1 < sevenDayData.dailyMetrics.count) ? sevenDayData.dailyMetrics[index + 1] : nil
+                        DailyExerciseRow(dailyMetrics: daily, previousMetrics: previousDay)
                     }
                 }
             }
@@ -316,6 +336,7 @@ struct ExerciseView: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
+                .padding(.horizontal)
                 
                 let filteredWorkouts = filterWorkoutsForPeriod()
                 
@@ -327,31 +348,64 @@ struct ExerciseView: View {
                         Text("No workouts \(viewMode == .today ? "today" : "this week")")
                             .font(.headline)
                             .foregroundColor(.secondary)
-                        Text("Your workout history will appear here once you record activities in the Health app")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 20)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 40)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color(.systemBackground))
-                            .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
-                    )
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground)).shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1))
+                    .padding(.horizontal)
                 } else {
-                    ForEach(filteredWorkouts, id: \.startDate) { workout in
-                        ExpandableWorkoutCard(
-                            workout: workout,
-                            isExpanded: expandedWorkoutId == workout.startDate,
-                            onTap: {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    expandedWorkoutId = expandedWorkoutId == workout.startDate ? nil : workout.startDate
-                                }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 16) {
+                            ForEach(filteredWorkouts.sorted(by: { $0.startDate > $1.startDate }), id: \.startDate) { workout in
+                                CompactWorkoutCard(workout: workout)
+                                    .frame(width: 200)
                             }
-                        )
+                        }
+                        .padding(.horizontal)
+                        .padding(.vertical, 4)
                     }
+                }
+            }
+        }
+        
+        struct CompactWorkoutCard: View {
+            let workout: WorkoutData
+            var body: some View {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Image(systemName: workoutIcon)
+                            .foregroundColor(.blue)
+                        Spacer()
+                        Text(workout.startDate, style: .date).font(.system(size: 10)).foregroundColor(.secondary)
+                    }
+                    
+                    Text(workout.workoutType.name).font(.headline).lineLimit(1)
+                    
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(workout.formattedDuration).font(.subheadline).fontWeight(.bold)
+                            Text("Duration").font(.system(size: 10)).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        if let cal = workout.totalEnergyBurned {
+                            VStack(alignment: .trailing) {
+                                Text("\(Int(cal))").font(.subheadline).fontWeight(.bold)
+                                Text("kcal").font(.system(size: 10)).foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+                .padding()
+                .background(RoundedRectangle(cornerRadius: 16).fill(Color(.systemBackground)).shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2))
+            }
+            
+            private var workoutIcon: String {
+                switch workout.workoutType {
+                case .running: return "figure.run"
+                case .cycling: return "bicycle"
+                case .walking: return "figure.walk"
+                case .swimming: return "figure.pool.swim"
+                default: return "figure.strengthtraining.traditional"
                 }
             }
         }
@@ -406,32 +460,9 @@ struct ExerciseView: View {
                 }
                 
                 if !subscriptionManager.isSubscribed {
-                    VStack(spacing: 12) {
-                        Image(systemName: "lock.fill")
-                            .font(.system(size: 40))
-                            .foregroundColor(.gray)
-                        Text("AI recommendations are available with the Monthly plan.")
-                            .font(.headline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal)
-                        Button("Subscribe") {
-                            showPaywall = true
-                        }
-                        .font(.headline)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 10)
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(8)
+                    PremiumTeaserView(category: .exercise) {
+                        showPaywall = true
                     }
-                    .frame(maxWidth: .infinity, minHeight: 100)
-                    .padding()
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color(.systemBackground))
-                            .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
-                    )
                 } else if exerciseRecommendations.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "figure.run")
@@ -465,12 +496,265 @@ struct ExerciseView: View {
         }
         
         func filterWorkoutsForPeriod() -> [WorkoutData] {
-            let dateRange = selectedPeriod.dateRange
+            let calendar = Calendar.current
+            let now = Date()
+            let dateRange: DateInterval
+            if viewMode == .today {
+                let startOfDay = calendar.startOfDay(for: now)
+                let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay) ?? now
+                dateRange = DateInterval(start: startOfDay, end: endOfDay)
+            } else {
+                let rangeDays = userGoals.historicalAverageDays
+                let xDaysAgo = calendar.date(byAdding: .day, value: -rangeDays, to: now) ?? now
+                dateRange = DateInterval(start: xDaysAgo, end: now)
+            }
             return healthKitManager.workouts.filter { workout in
                 dateRange.contains(workout.startDate)
             }
         }
         
+        func calculateExercisePerformanceExpected() -> ExercisePerformanceExpectedData {
+            guard let metrics = healthKitManager.sevenDayMetrics else {
+                return ExercisePerformanceExpectedData(
+                    score: 75,
+                    rating: "Good",
+                    hrvStatus: "-- ms (Avg: --)",
+                    rhrStatus: "-- bpm (Avg: --)",
+                    sleepStatus: "-- hrs (Target: --)",
+                    deepSleepStatus: "-- hrs",
+                    recommendation: "Please sync your Apple Health / HealthKit data to get a personalized exercise readiness and training prediction score.",
+                    statusColor: Color(hex: "9FBBE5")
+                )
+            }
+            
+            let today = metrics.todayMetrics
+            let latestHRV = today?.heartRateVariability ?? healthKitManager.healthMetrics?.heartRateVariability
+            let latestRHR = today?.restingHeartRate ?? healthKitManager.healthMetrics?.restingHeartRate
+            let todaySleep: Double = {
+                if let duration = today?.sleepDuration {
+                    return duration
+                } else if let sleepSamples = healthKitManager.healthMetrics?.sleepAnalysis {
+                    let totalDuration = sleepSamples
+                        .filter { $0.sleepType != .inBed && $0.sleepType != .awake }
+                        .reduce(0.0) { $0 + $1.duration }
+                    return totalDuration / 3600.0
+                }
+                return 0.0
+            }()
+            
+            let avgHRV = metrics.avgHeartRateVariability ?? 50.0
+            let avgRHR = metrics.avgRestingHeartRate ?? 65.0
+            
+            let deepTime = healthKitManager.sleepData.filter { $0.sleepType == .deep }.reduce(0.0) { $0 + $1.duration }
+            let deepSleepHours = deepTime / 3600.0
+            
+            var computedScore = 70.0
+            
+            var hrvDiffText = ""
+            if let currentHRV = latestHRV {
+                let diff = currentHRV - avgHRV
+                let points = diff * 0.5
+                computedScore += max(-15.0, min(15.0, points))
+                hrvDiffText = String(format: "%.0f ms (Avg: %.0f ms)", currentHRV, avgHRV)
+            } else {
+                hrvDiffText = "-- ms (Avg: --)"
+            }
+            
+            var rhrDiffText = ""
+            if let currentRHR = latestRHR {
+                let diff = avgRHR - currentRHR
+                let points = diff * 1.5
+                computedScore += max(-15.0, min(15.0, points))
+                rhrDiffText = String(format: "%.0f bpm (Avg: %.0f bpm)", currentRHR, avgRHR)
+            } else {
+                rhrDiffText = "-- bpm (Avg: --)"
+            }
+            
+            var deepSleepText = ""
+            if deepSleepHours > 0 {
+                let diff = deepSleepHours - 1.25
+                let points = diff * 13.3
+                computedScore += max(-10.0, min(10.0, points))
+                deepSleepText = String(format: "%.1f hrs", deepSleepHours)
+            } else {
+                deepSleepText = "-- hrs"
+            }
+            
+            var sleepText = ""
+            let targetSleep = userGoals.targetSleepHours
+            if todaySleep > 0 {
+                let diff = todaySleep - targetSleep
+                let points = diff * 5.0
+                computedScore += max(-10.0, min(10.0, points))
+                sleepText = String(format: "%.1f hrs (Target: %.1f hrs)", todaySleep, targetSleep)
+            } else {
+                sleepText = "-- hrs (Target: %.1f hrs)"
+            }
+            
+            let finalScore = max(0, min(100, Int(round(computedScore))))
+            
+            let rating: String
+            let recommendation: String
+            let color: Color
+            
+            switch finalScore {
+            case 85...100:
+                rating = "Excellent"
+                color = Color(hex: "41573A")
+                recommendation = "Your body is fully primed! HRV is elevated and resting heart rate is low, indicating a strong parasympathetic recovery state. Today is perfect for high-intensity training, lifting heavy, or testing your boundaries."
+            case 70...84:
+                rating = "Good"
+                color = Color(hex: "9FBBE5")
+                recommendation = "Vitals are stable and recovery is solid. Your cardiovascular system can comfortably handle standard workouts. Maintain your usual training targets or aim for a moderate cardio/resistance session."
+            case 50...69:
+                rating = "Moderate"
+                color = Color(hex: "5D4F32")
+                recommendation = "Some fatigue detected. Elevated resting heart rate or minor sleep deficit suggests a reduced capacity for stress. Consider scaling back intensity: focus on endurance, stretching, or active recovery today."
+            default:
+                rating = "Needs Active Recovery"
+                color = Color(hex: "C26A53")
+                recommendation = "Vitals indicate physical strain or significant sleep deficit (low HRV, elevated RHR). Avoid heavy load or high-intensity intervals today. Prioritize active recovery (light walking, yoga, mobility work) and rest."
+            }
+            
+            return ExercisePerformanceExpectedData(
+                score: finalScore,
+                rating: rating,
+                hrvStatus: hrvDiffText,
+                rhrStatus: rhrDiffText,
+                sleepStatus: sleepText,
+                deepSleepStatus: deepSleepText,
+                recommendation: recommendation,
+                statusColor: color
+            )
+        }
+        
+        private var exercisePerformanceExpectedSection: some View {
+            let data = calculateExercisePerformanceExpected()
+            
+            return VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .foregroundColor(Color(hex: "9FBBE5"))
+                        .font(.title3)
+                    
+                    Text("Exercise Performance Expected")
+                        .font(.custom("PlayfairDisplay-Bold", size: 18, relativeTo: .headline))
+                        .foregroundColor(Color(hex: "5D4F32"))
+                    
+                    Spacer()
+                    
+                    Text(data.rating.uppercased())
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(data.statusColor.opacity(0.12))
+                        .foregroundColor(data.statusColor)
+                        .cornerRadius(6)
+                }
+                
+                HStack(alignment: .center, spacing: 16) {
+                    ZStack {
+                        Circle()
+                            .stroke(Color(hex: "5D4F32").opacity(0.1), lineWidth: 8)
+                            .frame(width: 80, height: 80)
+                        
+                        Circle()
+                            .trim(from: 0.0, to: CGFloat(data.score) / 100.0)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [data.statusColor, data.statusColor.opacity(0.6)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                ),
+                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                            )
+                            .frame(width: 80, height: 80)
+                            .rotationEffect(.degrees(-90))
+                            .animation(.easeOut(duration: 1.0), value: data.score)
+                        
+                        VStack(spacing: 2) {
+                            Text("\(data.score)")
+                                .font(.system(size: 24, weight: .bold, design: .serif))
+                                .foregroundColor(Color(hex: "41573A"))
+                            Text("SCORE")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(Color(hex: "5D4F32").opacity(0.8))
+                                .tracking(1.0)
+                        }
+                    }
+                    .padding(.leading, 4)
+                    
+                    VStack(alignment: .leading, spacing: 6) {
+                        PerformanceMetricRow(title: "HRV", value: data.hrvStatus, icon: "waveform.path.ecg", color: Color(hex: "9FBBE5"))
+                        PerformanceMetricRow(title: "Resting HR", value: data.rhrStatus, icon: "heart.fill", color: Color(hex: "C26A53"))
+                        PerformanceMetricRow(title: "Deep Sleep", value: data.deepSleepStatus, icon: "moon.stars.fill", color: Color(hex: "5D4F32"))
+                        PerformanceMetricRow(title: "Total Sleep", value: data.sleepStatus, icon: "bed.double.fill", color: Color(hex: "41573A"))
+                    }
+                }
+                .padding(.vertical, 4)
+                
+                Divider()
+                    .background(Color(hex: "FAFAFA"))
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("DAILY TRAINING STRATEGY")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(Color(hex: "5D4F32").opacity(0.8))
+                        .tracking(1.0)
+                    
+                    if subscriptionManager.isSubscribed {
+                        Text(data.recommendation)
+                            .font(.caption)
+                            .foregroundColor(Color(hex: "2A3F44"))
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        ZStack {
+                            Text(data.recommendation)
+                                .font(.caption)
+                                .foregroundColor(Color(hex: "2A3F44"))
+                                .blur(radius: 4.5)
+                                .opacity(0.2)
+                                .disabled(true)
+                            
+                            VStack(spacing: 8) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "lock.fill")
+                                        .font(.caption2)
+                                        .foregroundColor(Color(hex: "5D4F32"))
+                                    Text("Unlock Custom Exertion Recommendations")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(Color(hex: "5D4F32"))
+                                }
+                                
+                                Button(action: { showPaywall = true }) {
+                                    Text("Upgrade to Premium")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundColor(Color(hex: "F6F2E9"))
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 6)
+                                        .background(Color(hex: "41573A"))
+                                        .clipShape(Capsule())
+                                        .shadow(color: Color(hex: "41573A").opacity(0.2), radius: 4, x: 0, y: 2)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .padding(.top, 2)
+            }
+            .padding(20)
+            .background(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(Color(hex: "F6F2E9"))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color(hex: "FAFAFA").opacity(0.8), lineWidth: 1.5)
+            )
+            .shadow(color: Color.black.opacity(0.03), radius: 10, x: 0, y: 5)
+        }
+
         func formatDuration(_ duration: TimeInterval) -> String {
             let hours = Int(duration) / 3600
             let minutes = Int(duration.truncatingRemainder(dividingBy: 3600) / 60)
@@ -479,6 +763,46 @@ struct ExerciseView: View {
                 return "\(hours)h \(minutes)m"
             } else {
                 return "\(minutes)m"
+            }
+        }
+    }
+    
+    struct ExercisePerformanceExpectedData {
+        let score: Int
+        let rating: String
+        let hrvStatus: String
+        let rhrStatus: String
+        let sleepStatus: String
+        let deepSleepStatus: String
+        let recommendation: String
+        let statusColor: Color
+    }
+    
+    struct PerformanceMetricRow: View {
+        let title: String
+        let value: String
+        let icon: String
+        let color: Color
+        
+        var body: some View {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 9))
+                    .foregroundColor(color)
+                    .frame(width: 14, height: 14)
+                    .background(color.opacity(0.1))
+                    .cornerRadius(3)
+                
+                Text(title)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(Color(hex: "5D4F32").opacity(0.8))
+                    .frame(width: 60, alignment: .leading)
+                
+                Text(value)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Color(hex: "2A3F44"))
+                
+                Spacer()
             }
         }
     }
@@ -523,9 +847,22 @@ struct ExerciseView: View {
                             .foregroundColor(color)
                             .font(.title3)
                         Spacer()
-                        Image(systemName: "sparkles")
-                            .font(.caption2)
-                            .foregroundColor(color.opacity(0.8))
+                        
+                        if let score = calculateSingleMetricScore(metricName: title.contains("Steps") ? "Steps" : "Active Energy", value: value) {
+                            Text("\(score)")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule()
+                                        .fill(score >= 80 ? Color.green : (score >= 50 ? Color.orange : Color.red))
+                                )
+                        } else {
+                            Image(systemName: "sparkles")
+                                .font(.caption2)
+                                .foregroundColor(color.opacity(0.8))
+                        }
                     }
                     
                     Text(value)
@@ -744,7 +1081,8 @@ struct ExerciseView: View {
     
     struct DailyExerciseRow: View {
         let dailyMetrics: DailyHealthMetrics
-        
+        var previousMetrics: DailyHealthMetrics? = nil
+
         var body: some View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -758,7 +1096,7 @@ struct ExerciseView: View {
                     }
                     Spacer()
                 }
-                
+
                 LazyVGrid(columns: [
                     GridItem(.flexible()),
                     GridItem(.flexible()),
@@ -768,23 +1106,29 @@ struct ExerciseView: View {
                         icon: "figure.walk",
                         label: "Steps",
                         value: "\(dailyMetrics.steps ?? 0)",
-                        color: .green
+                        color: .green,
+                        previousValue: previousMetrics?.steps.map { Double($0) },
+                        isHigherBetter: true
                     )
-                    
+
                     MetricBadge(
                         icon: "flame.fill",
                         label: "Active Energy",
                         value: "\(Int(dailyMetrics.activeEnergyBurned ?? 0))",
                         unit: "kcal",
-                        color: .orange
+                        color: .orange,
+                        previousValue: previousMetrics?.activeEnergyBurned,
+                        isHigherBetter: true
                     )
-                    
+
                     MetricBadge(
                         icon: "heart.fill",
                         label: "Heart Rate",
                         value: "\(String(format: "%.1f", dailyMetrics.heartRate ?? 0))",
                         unit: "BPM",
-                        color: .red
+                        color: .red,
+                        previousValue: previousMetrics?.heartRate,
+                        isHigherBetter: false
                     )
                 }
             }
@@ -794,8 +1138,7 @@ struct ExerciseView: View {
                     .fill(Color(.systemBackground))
                     .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
             )
-        }
-        
+        }        
         private var formattedDate: String {
             let calendar = Calendar.current
             if calendar.isDateInToday(dailyMetrics.date) {
@@ -822,17 +1165,38 @@ struct ExerciseView: View {
         let value: String
         var unit: String = ""
         let color: Color
-        
+        var previousValue: Double? = nil
+        var isHigherBetter: Bool? = nil
+
+        private var valueDouble: Double {
+            Double(value) ?? 0
+        }
+
+        private var trendColor: Color {
+            guard let prev = previousValue, let betterHigh = isHigherBetter, valueDouble != prev else { return .secondary }
+            let increased = valueDouble > prev
+            if betterHigh {
+                return increased ? .green : .red
+            } else {
+                return increased ? .red : .green
+            }
+        }
+
+        private var trendIcon: String {
+            guard let prev = previousValue, valueDouble != prev else { return "minus" }
+            return valueDouble > prev ? "arrow.up.right" : "arrow.down.right"
+        }
+
         var body: some View {
             VStack(spacing: 6) {
                 Image(systemName: icon)
                     .font(.title3)
                     .foregroundColor(color)
-                
+
                 Text(label)
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                
+
                 HStack(spacing: 2) {
                     Text(value)
                         .font(.subheadline)
@@ -841,6 +1205,12 @@ struct ExerciseView: View {
                         Text(unit)
                             .font(.caption2)
                             .foregroundColor(.secondary)
+                    }
+                    if previousValue != nil {
+                        Image(systemName: trendIcon)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(trendColor)
+                            .padding(.leading, 2)
                     }
                 }
             }
@@ -852,7 +1222,6 @@ struct ExerciseView: View {
             )
         }
     }
-
 #Preview {
     ExerciseView(viewMode: .constant(.today))
         .environmentObject(HealthKitManager())
@@ -860,4 +1229,31 @@ struct ExerciseView: View {
         .environmentObject(UserGoals())
         .environmentObject(SubscriptionManager())
 }
+
+extension Color {
+    init(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let a, r, g, b: UInt64
+        switch hex.count {
+        case 3: // RGB (12-bit)
+            (a, r, g, b) = (255, (int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
+        case 6: // RGB (24-bit)
+            (a, r, g, b) = (255, int >> 16, int >> 8 & 0xFF, int & 0xFF)
+        case 8: // ARGB (32-bit)
+            (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
+        default:
+            (a, r, g, b) = (255, 0, 0, 0)
+        }
+        self.init(
+            .sRGB,
+            red: Double(r) / 255,
+            green: Double(g) / 255,
+            blue: Double(b) / 255,
+            opacity: Double(a) / 255
+        )
+    }
+}
+
 

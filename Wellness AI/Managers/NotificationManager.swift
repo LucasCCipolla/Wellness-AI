@@ -7,98 +7,70 @@ private let lastScheduledMotivationDateKey = "lastScheduledMotivationDate"
 class NotificationManager {
     static let shared = NotificationManager()
     
-    private init() {}
+    private init() {
+        cleanupOldNotifications()
+    }
+    
+    // MARK: - Contextual Notifications
+    
+    enum NotificationType: String {
+        case trendReinforcement = "trend-reinforcement"
+        case dataGapNudge = "data-gap-nudge"
+        case predictiveIncentive = "predictive-incentive"
+        case healthAlert = "health-alert"
+    }
+
+    func shouldSendNotification(type: NotificationType, metricName: String? = nil) -> Bool {
+        let identifier = "\(type.rawValue)\(metricName != nil ? "-\(metricName!)" : "")"
+        let lastSentKey = "lastSent-\(identifier)"
+        if let lastDate = UserDefaults.standard.object(forKey: lastSentKey) as? Date {
+            let interval: TimeInterval = type == .healthAlert ? 6 * 3600 : 24 * 3600
+            if Date().timeIntervalSince(lastDate) < interval {
+                return false
+            }
+        }
+        return true
+    }
+
+    func sendContextualNotification(type: NotificationType, title: String, body: String, metricName: String? = nil) {
+        guard shouldSendNotification(type: type, metricName: metricName) else { return }
+        
+        let identifier = "\(type.rawValue)\(metricName != nil ? "-\(metricName!)" : "")"
+        let lastSentKey = "lastSent-\(identifier)"
+        
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.categoryIdentifier = type.rawValue
+        
+        // Deliver immediately
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+        
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                print("Error sending contextual notification: \(error.localizedDescription)")
+            } else {
+                UserDefaults.standard.set(Date(), forKey: lastSentKey)
+                print("Successfully sent \(type.rawValue) notification")
+            }
+        }
+    }
     
     // Request notification permissions
     func requestAuthorization() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if granted {
                 print("Notification permission granted")
-                self.scheduleMealNotifications()
             } else if let error = error {
                 print("Notification permission error: \(error.localizedDescription)")
             }
         }
     }
     
-    // Schedule all meal notifications
-    func scheduleMealNotifications() {
-        // Remove existing meal notifications (keep motivation separate)
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [
-            "breakfast-notification",
-            "lunch-notification",
-            "snack-notification",
-            "dinner-notification"
-        ])
-        
-        // Schedule breakfast notification (9:00 AM)
-        scheduleMealNotification(
-            identifier: "breakfast-notification",
-            title: "Breakfast Time! 🌅",
-            body: "Don't forget to log your breakfast meal to track your nutrition goals.",
-            hour: 9,
-            minute: 0
-        )
-        
-        // Schedule lunch notification (12:00 PM)
-        scheduleMealNotification(
-            identifier: "lunch-notification",
-            title: "Lunch Time! ☀️",
-            body: "Time to fuel up! Log your lunch to stay on track with your nutrition.",
-            hour: 12,
-            minute: 0
-        )
-        
-        // Schedule snack notification (6:00 PM / 18:00)
-        scheduleMealNotification(
-            identifier: "snack-notification",
-            title: "Snack Time! 🍎",
-            body: "Need a healthy snack? Remember to log it to track your daily intake.",
-            hour: 18,
-            minute: 0
-        )
-        
-        // Schedule dinner notification (9:00 PM / 21:00)
-        scheduleMealNotification(
-            identifier: "dinner-notification",
-            title: "Dinner Time! 🌙",
-            body: "Time for your last meal of the day. Don't forget to log it!",
-            hour: 21,
-            minute: 0
-        )
-    }
-    
-    // Schedule a single meal notification
-    private func scheduleMealNotification(identifier: String, title: String, body: String, hour: Int, minute: Int) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-        content.categoryIdentifier = "meal-logging"
-        
-        // Create date components for the notification
-        var dateComponents = DateComponents()
-        dateComponents.hour = hour
-        dateComponents.minute = minute
-        
-        // Create trigger that repeats daily
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
-        
-        // Create the request
-        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
-        
-        // Schedule the notification
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                print("Error scheduling notification \(identifier): \(error.localizedDescription)")
-            } else {
-                print("Successfully scheduled notification: \(identifier)")
-            }
-        }
-    }
-    
-    // Cancel all meal notifications
-    func cancelMealNotifications() {
+    // Cancel old meal notifications
+    func cleanupOldNotifications() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [
             "breakfast-notification",
             "lunch-notification",
@@ -115,6 +87,43 @@ class NotificationManager {
             }
         }
     }
+    
+    // MARK: - Health Alerts
+    
+    func sendHealthAlert(metricName: String, currentValue: String, healthyRange: String) {
+        let identifier = "health-alert-\(metricName)"
+        
+        // Don't send the same alert too frequently (e.g., once every 6 hours)
+        let lastAlertKey = "lastAlert-\(metricName)"
+        if let lastAlertDate = UserDefaults.standard.object(forKey: lastAlertKey) as? Date {
+            if Date().timeIntervalSince(lastAlertDate) < 6 * 3600 {
+                return
+            }
+        }
+
+        // Build a specific, actionable notification body
+        let title = "⚠️ \(metricName) needs attention"
+        let body = "\(metricName) is \(currentValue) — outside your target of \(healthyRange). Open Nessa for personalised advice."
+        
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.categoryIdentifier = "health-alert"
+        
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+        
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                print("Error sending health alert: \(error.localizedDescription)")
+            } else {
+                print("Health alert sent for \(metricName)")
+                UserDefaults.standard.set(Date(), forKey: lastAlertKey)
+            }
+        }
+    }
+
     
     // MARK: - 3 PM motivation notification
     
@@ -148,6 +157,9 @@ class NotificationManager {
         
         // Prefer full-context prompt (all metrics) when we have user goals
         if let goals = userGoals, (healthMetrics != nil || sevenDayMetrics != nil) {
+            // Set immediately to prevent duplicate requests while async task is running
+            UserDefaults.standard.set(next3PMDay, forKey: lastScheduledMotivationDateKey)
+            
             // Filter hydration to only days with entries (non-empty) and compute today's total
             let filteredWeeklyHydration: [String: [HydrationEntry]] = weeklyHydration.filter { !$0.value.isEmpty }
             let todayKey = ISO8601DateFormatter().string(from: Calendar.current.startOfDay(for: Date()))
@@ -164,10 +176,14 @@ class NotificationManager {
                 weeklyMeals: weeklyMeals,
                 weeklyHydration: hydrationForPrompt
             ) { [weak self] message in
-                guard let self = self, let message = message else { return }
+                guard let self = self else { return }
                 DispatchQueue.main.async {
-                    self.scheduleMotivationNotification(title: "Your daily wellness check 💪", body: message)
-                    UserDefaults.standard.set(next3PMDay, forKey: lastScheduledMotivationDateKey)
+                    if let message = message {
+                        self.scheduleMotivationNotification(title: "Your daily wellness check 💪", body: message)
+                    } else {
+                        // Clear the key if the network call failed, so it can try again
+                        UserDefaults.standard.removeObject(forKey: lastScheduledMotivationDateKey)
+                    }
                 }
             }
             return
@@ -178,11 +194,18 @@ class NotificationManager {
             return
         }
         
+        // Set immediately to prevent duplicate requests while async task is running
+        UserDefaults.standard.set(next3PMDay, forKey: lastScheduledMotivationDateKey)
+        
         openAIManager.generateMotivationMessage(metricName: chosen.name, value: chosen.value, isGood: chosen.isGood) { [weak self] message in
-            guard let self = self, let message = message else { return }
+            guard let self = self else { return }
             DispatchQueue.main.async {
-                self.scheduleMotivationNotification(title: "Your daily wellness check 💪", body: message)
-                UserDefaults.standard.set(next3PMDay, forKey: lastScheduledMotivationDateKey)
+                if let message = message {
+                    self.scheduleMotivationNotification(title: "Your daily wellness check 💪", body: message)
+                } else {
+                    // Clear the key if the network call failed, so it can try again
+                    UserDefaults.standard.removeObject(forKey: lastScheduledMotivationDateKey)
+                }
             }
         }
     }
