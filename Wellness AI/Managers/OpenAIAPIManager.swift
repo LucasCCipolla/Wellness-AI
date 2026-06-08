@@ -223,8 +223,9 @@ class OpenAIAPIManager: ObservableObject {
         let targetText = target != nil ? String(format: "%.1f", target!) : "not specified"
         let historyText = history.isEmpty ? "No historical data" : history.map { String(format: "%.1f", $0) }.joined(separator: ", ")
         
+        let coachContext = userGoalsManager != nil ? "COACHING STYLE DIRECTIVE: \(userGoalsManager!.coachPersona.promptDirective)\n\n" : ""
         let prompt = """
-        Provide a professional health analysis for this specific metric:
+        \(coachContext)Provide a professional health analysis for this specific metric:
         Metric: \(metricName)
         Current Value: \(String(format: "%.1f", value)) \(unit)
         Target: \(targetText) \(unit)
@@ -237,7 +238,7 @@ class OpenAIAPIManager: ObservableObject {
           "status": "Brief status (e.g. 'Looking Great' or 'Needs Attention')",
           "statusColor": "green" | "orange" | "red",
           "trend": "Description of the 7-day trend (e.g. 'Steady increase', 'Fluctuating')",
-          "analysis": "A 2-sentence expert analysis of the current value and trend in relation to the user's goal.",
+          "analysis": "A 2-sentence expert analysis of the current value and trend in relation to the user's goal. Maximum 40 words. Strict constraint. Tailor the tone to the coaching style directive.",
           "recommendation": "If statusColor is NOT green, provide ONE specific actionable recommendation to improve this metric. If green, this can be null."
         }
         """
@@ -288,8 +289,9 @@ class OpenAIAPIManager: ObservableObject {
         }
         
         let weather = WeatherManager.shared.getCurrentWeather()
+        let coachContext = userGoalsManager != nil ? "COACHING STYLE DIRECTIVE: \(userGoalsManager!.coachPersona.promptDirective)\n\n" : ""
         let prompt = """
-        Provide a professional health analysis for the health dimension: "\(dimension.title)".
+        \(coachContext)Provide a professional health analysis for the health dimension: "\(dimension.title)".
         The dimension consists of: \(dimension.metricNames.joined(separator: ", ")).
         
         Here is the 7-day historical data (oldest to newest):
@@ -306,7 +308,7 @@ class OpenAIAPIManager: ObservableObject {
         {
           "status": "A short summary status (e.g. 'Highly Recovered', 'Elevated Strain')",
           "statusColor": "green" | "orange" | "red",
-          "analysis": "Clinical analysis of the metric interactions. Maximum 60 words. Strict constraint."
+          "analysis": "Clinical analysis of the metric interactions. Maximum 60 words. Strict constraint. Tailor the tone to the coaching style directive."
         }
         """
         
@@ -1254,8 +1256,9 @@ class OpenAIAPIManager: ObservableObject {
         context += "- Pollen level: \(weather.pollenLevel)\n"
         context += "- Weather condition: \(weather.condition)\n\n"
 
+        let coachContext = userGoalsManager != nil ? "COACHING STYLE DIRECTIVE: \(userGoalsManager!.coachPersona.promptDirective)\n\n" : ""
         let prompt = """
-        You are a chronic condition management expert. Analyze the following data for a user with \(condition).
+        \(coachContext)You are a chronic condition management expert. Analyze the following data for a user with \(condition).
 
         Compare their current vitals, symptoms, and adherence to identify trends. Determine if their management of this condition appears to be Improving, Stable, or Worsening.
 
@@ -1264,10 +1267,10 @@ class OpenAIAPIManager: ObservableObject {
         STRUCTURE YOUR RESPONSE EXACTLY LIKE THIS:
         STATUS: [Improving / Stable / Worsening]
 
-        [Detailed insight explaining WHY the status was chosen. Correlate symptoms with specific vitals if patterns exist. Mention specific medications if relevant. Provide ONE specific, actionable lifestyle tip for managing this condition.]
+        [Detailed insight explaining WHY the status was chosen. Correlate symptoms with specific vitals if patterns exist. Mention specific medications if relevant. Provide ONE specific, actionable lifestyle tip for managing this condition. Keep the tone tailored to the coaching style directive.]
 
         Keep the tone professional, supportive, and data-driven.
-        Max 150 words.
+        Max 150 words. Strict constraint.
         """
 
         let request = createChatRequest(prompt: prompt, maxTokens: 400)        
