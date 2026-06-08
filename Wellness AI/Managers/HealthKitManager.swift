@@ -1142,6 +1142,7 @@ class HealthKitManager: ObservableObject {
             
             let dispatchGroup = DispatchGroup()
             var workoutDataArray: [WorkoutData] = []
+            let arrayQueue = DispatchQueue(label: "com.wellnessai.workoutDataQueue")
             
             for workout in workouts {
                 dispatchGroup.enter()
@@ -1167,10 +1168,10 @@ class HealthKitManager: ObservableObject {
                         maxHeartRate: maxHeartRate
                     )
                     
-                    // Note: workoutDataArray is modified across different threads/callbacks.
-                    // In a production app, consider using a serial queue or a lock to avoid race conditions.
-                    workoutDataArray.append(workoutData)
-                    dispatchGroup.leave()
+                    arrayQueue.async {
+                        workoutDataArray.append(workoutData)
+                        dispatchGroup.leave()
+                    }
                 }
             }
             
@@ -1256,6 +1257,7 @@ class HealthKitManager: ObservableObject {
             
             let dispatchGroup = DispatchGroup()
             var sleepSamplesWithMetrics: [SleepSample] = []
+            let arrayQueue = DispatchQueue(label: "com.wellnessai.sleepDataQueue")
             
             for sample in categorySamples {
                 dispatchGroup.enter()
@@ -1273,8 +1275,10 @@ class HealthKitManager: ObservableObject {
                         averageRespiratoryRate: avgRR,
                         averageOxygenSaturation: avgO2
                     )
-                    sleepSamplesWithMetrics.append(sleepSample)
-                    dispatchGroup.leave()
+                    arrayQueue.async {
+                        sleepSamplesWithMetrics.append(sleepSample)
+                        dispatchGroup.leave()
+                    }
                 }
             }
             
